@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: davicool
+    runtime: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATA_DIR
+        value: /opt/render/project/src/data
+      - key: GOOGLE_SHEET_WRITE_URL
+        sync: false
+      - key: GOOGLE_SHEET_WRITE_SECRET
+        sync: false

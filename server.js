@@ -5,7 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const appRoot = __dirname;
-const publicRoot = path.resolve(__dirname, '..');
+const publicRoot = appRoot;
 const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(appRoot, 'data');
 const dbPath = path.join(dataDir, 'app-db.json');
 const port = Number(process.env.PORT || 8080);

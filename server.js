@@ -6,7 +6,7 @@ const crypto = require('crypto');
 
 const appRoot = __dirname;
 const publicRoot = appRoot;
-const dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(appRoot, 'data');
+const dataDir = resolveDataDir();
 const dbPath = path.join(dataDir, 'app-db.json');
 const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || '0.0.0.0';
@@ -43,12 +43,20 @@ async function start() {
   const server = http.createServer((req, res) => {
     handleRequest(req, res).catch(error => {
       console.error(error);
+      if (error.httpStatus) {
+        sendJson(res, error.httpStatus, { error: error.code || 'REQUEST_ERROR', message: error.message });
+        return;
+      }
       sendJson(res, 500, { error: 'SERVER_ERROR', message: '伺服器發生錯誤。' });
     });
   });
 
   server.listen(port, host, () => {
     console.log(`http://${host}:${port}/factory-crm-app/`);
+    console.log(`Data directory: ${dataDir}`);
+    if (isLikelyEphemeralDataDir()) {
+      console.warn('WARNING: DATA_DIR is not set to a known persistent disk path. User and customer changes may disappear after a redeploy or restart.');
+    }
   });
 }
 
@@ -111,6 +119,11 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'GET' && url.pathname === '/api/storage-status') {
+    sendJson(res, 200, getStorageStatus());
+    return;
+  }
+
   if (req.method === 'GET' && url.pathname === '/api/customer-states') {
     const db = await readDb();
     sendJson(res, 200, { customerStates: db.customerStates || {}, customerProfiles: db.customerProfiles || {} });
@@ -119,6 +132,7 @@ async function handleApi(req, res, url) {
 
   const customerMatch = url.pathname.match(/^\/api\/customers\/(.+)$/);
   if (req.method === 'PUT' && customerMatch) {
+    const storage = getStorageStatus();
     const customerId = decodeURIComponent(customerMatch[1]);
     const body = await readJson(req);
     const db = await readDb();
@@ -141,13 +155,18 @@ async function handleApi(req, res, url) {
       fields: Object.keys(body || {}),
       sheetSync
     }, true);
-    await writeDb(db);
-    sendJson(res, 200, { customerProfile, sheetSync });
+    await writeDbAndVerify(
+      db,
+      saved => saved.customerProfiles?.[customerId]?.updatedAt === customerProfile.updatedAt,
+      '客戶資料未成功寫入資料庫。'
+    );
+    sendJson(res, 200, { customerProfile, sheetSync, storage });
     return;
   }
 
   const stateMatch = url.pathname.match(/^\/api\/customer-states\/(.+)$/);
   if (req.method === 'PUT' && stateMatch) {
+    const storage = getStorageStatus();
     const customerId = decodeURIComponent(stateMatch[1]);
     const body = await readJson(req);
     const db = await readDb();
@@ -170,8 +189,12 @@ async function handleApi(req, res, url) {
       grade: customerState.grade,
       sheetSync
     }, true);
-    await writeDb(db);
-    sendJson(res, 200, { customerState, sheetSync });
+    await writeDbAndVerify(
+      db,
+      saved => saved.customerStates?.[customerId]?.updatedAt === customerState.updatedAt,
+      '追蹤紀錄未成功寫入資料庫。'
+    );
+    sendJson(res, 200, { customerState, sheetSync, storage });
     return;
   }
 
@@ -189,6 +212,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/users') {
+    const storage = getStorageStatus();
     const body = await readJson(req);
     const db = await readDb();
     const username = cleanString(body.username);
@@ -211,13 +235,18 @@ async function handleApi(req, res, url) {
     };
     db.users.push(user);
     await writeAudit(db, auth.user, 'CREATE_USER', { username: user.username, role: user.role }, true);
-    await writeDb(db);
-    sendJson(res, 201, { user: publicUser(user) });
+    await writeDbAndVerify(
+      db,
+      saved => saved.users.some(item => item.id === user.id && item.username === user.username),
+      '使用者未成功寫入資料庫。'
+    );
+    sendJson(res, 201, { user: publicUser(user), storage });
     return;
   }
 
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && req.method === 'PUT') {
+    const storage = getStorageStatus();
     const userId = decodeURIComponent(userMatch[1]);
     const body = await readJson(req);
     const db = await readDb();
@@ -232,8 +261,12 @@ async function handleApi(req, res, url) {
     if (body.password) user.password = hashPassword(String(body.password));
     user.updatedAt = new Date().toISOString();
     await writeAudit(db, auth.user, 'UPDATE_USER', { username: user.username, role: user.role, active: user.active }, true);
-    await writeDb(db);
-    sendJson(res, 200, { user: publicUser(user) });
+    await writeDbAndVerify(
+      db,
+      saved => saved.users.some(item => item.id === user.id && item.updatedAt === user.updatedAt),
+      '使用者更新未成功寫入資料庫。'
+    );
+    sendJson(res, 200, { user: publicUser(user), storage });
     return;
   }
 
@@ -248,7 +281,11 @@ async function handleApi(req, res, url) {
 }
 
 async function serveStatic(req, res, url) {
-  let file = path.resolve(publicRoot, decodeURIComponent(url.pathname.replace(/^\//, '')));
+  let requestPath = decodeURIComponent(url.pathname);
+  if (requestPath === '/factory-crm-app' || requestPath.startsWith('/factory-crm-app/')) {
+    requestPath = requestPath.replace(/^\/factory-crm-app\/?/, '/') || '/';
+  }
+  let file = path.resolve(publicRoot, requestPath.replace(/^\//, ''));
   if (!file.startsWith(publicRoot)) {
     res.writeHead(403);
     res.end('Forbidden');
@@ -374,13 +411,30 @@ async function ensureDb() {
 }
 
 async function readDb() {
-  const raw = await fsp.readFile(dbPath, 'utf8');
+  const raw = (await fsp.readFile(dbPath, 'utf8')).replace(/^\uFEFF/, '');
   return { ...structuredClone(defaultDb), ...JSON.parse(raw) };
 }
 
 async function writeDb(db) {
   await fsp.mkdir(dataDir, { recursive: true });
-  await fsp.writeFile(dbPath, JSON.stringify(db, null, 2), 'utf8');
+  const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
+  let moved = false;
+  try {
+    await fsp.writeFile(tempPath, JSON.stringify(db, null, 2), 'utf8');
+    await fsp.rename(tempPath, dbPath);
+    moved = true;
+  } finally {
+    if (!moved) await fsp.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+async function writeDbAndVerify(db, verifier, message) {
+  await writeDb(db);
+  const saved = await readDb();
+  if (!verifier(saved)) {
+    throw httpError(500, 'DB_WRITE_VERIFY_FAILED', message);
+  }
+  return saved;
 }
 
 async function requireAuth(req, res) {
@@ -405,7 +459,7 @@ async function requireAuth(req, res) {
 async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString('utf8');
+  const raw = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '');
   return raw ? JSON.parse(raw) : {};
 }
 
@@ -475,6 +529,39 @@ function cleanEnv(value) {
   const result = cleanString(value);
   return result || '';
 }
+
+function resolveDataDir() {
+  if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR);
+
+  const renderDiskPath = '/var/data';
+  if (process.env.RENDER && fs.existsSync(renderDiskPath)) return renderDiskPath;
+
+  return path.join(appRoot, 'data');
+}
+
+function getStorageStatus() {
+  return {
+    dataDir,
+    dbPath,
+    configuredByEnv: Boolean(process.env.DATA_DIR),
+    render: Boolean(process.env.RENDER),
+    likelyPersistent: !isLikelyEphemeralDataDir()
+  };
+}
+
+function isLikelyEphemeralDataDir() {
+  if (!process.env.RENDER) return false;
+  const normalized = path.resolve(dataDir).replace(/\\/g, '/');
+  return normalized !== '/var/data' && !normalized.startsWith('/var/data/');
+}
+
+function httpError(status, code, message) {
+  const error = new Error(message);
+  error.httpStatus = status;
+  error.code = code;
+  return error;
+}
+
 
 function sanitizeStatus(value) {
   return ['todo', 'follow', 'visited', 'closed'].includes(value) ? value : 'todo';

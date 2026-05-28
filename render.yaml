@@ -2,11 +2,16 @@ services:
   - type: web
     name: davicool
     runtime: node
+    plan: starter
     buildCommand: npm install
     startCommand: npm start
+    disk:
+      name: factory-crm-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: DATA_DIR
-        value: /opt/render/project/src/data
+        value: /var/data
       - key: GOOGLE_SHEET_WRITE_URL
         sync: false
       - key: GOOGLE_SHEET_WRITE_SECRET

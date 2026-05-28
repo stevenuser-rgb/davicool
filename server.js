@@ -16,6 +16,7 @@ const sessions = new Map();
 const sheetCsvUrl = 'https://docs.google.com/spreadsheets/d/185NZwvJFPTsgi0H99mpl8KsDg_cMxxRbIwGu0N2Agko/export?format=csv';
 const sheetWriteUrl = cleanEnv(process.env.GOOGLE_SHEET_WRITE_URL);
 const sheetWriteSecret = cleanEnv(process.env.GOOGLE_SHEET_WRITE_SECRET);
+const remoteDbBackupEnabled = Boolean(sheetWriteUrl && sheetWriteSecret);
 
 const types = {
   '.html': 'text/html; charset=utf-8',
@@ -47,15 +48,16 @@ async function start() {
         sendJson(res, error.httpStatus, { error: error.code || 'REQUEST_ERROR', message: error.message });
         return;
       }
-      sendJson(res, 500, { error: 'SERVER_ERROR', message: '伺服器發生錯誤。' });
+      sendJson(res, 500, { error: 'SERVER_ERROR', message: 'Server error.' });
     });
   });
 
   server.listen(port, host, () => {
     console.log(`http://${host}:${port}/factory-crm-app/`);
     console.log(`Data directory: ${dataDir}`);
-    if (isLikelyEphemeralDataDir()) {
-      console.warn('WARNING: DATA_DIR is not set to a known persistent disk path. User and customer changes may disappear after a redeploy or restart.');
+    console.log(`Remote DB backup: ${remoteDbBackupEnabled ? 'enabled' : 'disabled'}`);
+    if (isLikelyEphemeralDataDir() && !remoteDbBackupEnabled) {
+      console.warn('WARNING: local filesystem is ephemeral and remote DB backup is disabled. Data may disappear after redeploy or restart.');
     }
   });
 }
@@ -77,7 +79,7 @@ async function handleApi(req, res, url) {
     if (!user || !verifyPassword(body.password || '', user.password)) {
       await writeAudit(db, null, 'LOGIN_FAILED', { username: body.username || '' }, false);
       await writeDb(db);
-      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '帳號或密碼錯誤。' });
+      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '\u5e33\u865f\u6216\u5bc6\u78bc\u932f\u8aa4\u3002' });
       return;
     }
 
@@ -115,7 +117,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/sheet-sync-status') {
-    sendJson(res, 200, { enabled: Boolean(sheetWriteUrl), hasSecret: Boolean(sheetWriteSecret) });
+    sendJson(res, 200, { enabled: Boolean(sheetWriteUrl), hasSecret: Boolean(sheetWriteSecret), remoteDbBackupEnabled });
     return;
   }
 
@@ -158,7 +160,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.customerProfiles?.[customerId]?.updatedAt === customerProfile.updatedAt,
-      '客戶資料未成功寫入資料庫。'
+      '\u5ba2\u6236\u8cc7\u6599\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
     );
     sendJson(res, 200, { customerProfile, sheetSync, storage });
     return;
@@ -192,7 +194,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.customerStates?.[customerId]?.updatedAt === customerState.updatedAt,
-      '追蹤紀錄未成功寫入資料庫。'
+      '\u8ffd\u8e64\u7d00\u9304\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
     );
     sendJson(res, 200, { customerState, sheetSync, storage });
     return;
@@ -200,7 +202,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs')) {
     if (auth.user.role !== 'admin') {
-      sendJson(res, 403, { error: 'FORBIDDEN', message: '需要管理員權限。' });
+      sendJson(res, 403, { error: 'FORBIDDEN', message: '\u9700\u8981\u7ba1\u7406\u54e1\u6b0a\u9650\u3002' });
       return;
     }
   }
@@ -217,11 +219,11 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const username = cleanString(body.username);
     if (!username || !body.password) {
-      sendJson(res, 400, { error: 'INVALID_USER', message: '請輸入帳號與密碼。' });
+      sendJson(res, 400, { error: 'INVALID_USER', message: '\u8acb\u8f38\u5165\u5e33\u865f\u8207\u5bc6\u78bc\u3002' });
       return;
     }
     if (db.users.some(user => user.username === username)) {
-      sendJson(res, 409, { error: 'USER_EXISTS', message: '帳號已存在。' });
+      sendJson(res, 409, { error: 'USER_EXISTS', message: '\u5e33\u865f\u5df2\u5b58\u5728\u3002' });
       return;
     }
     const user = {
@@ -238,7 +240,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.users.some(item => item.id === user.id && item.username === user.username),
-      '使用者未成功寫入資料庫。'
+      '\u4f7f\u7528\u8005\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
     );
     sendJson(res, 201, { user: publicUser(user), storage });
     return;
@@ -252,7 +254,7 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const user = db.users.find(item => item.id === userId);
     if (!user) {
-      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '找不到使用者。' });
+      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '\u627e\u4e0d\u5230\u4f7f\u7528\u8005\u3002' });
       return;
     }
     user.displayName = cleanString(body.displayName ?? user.displayName) || user.username;
@@ -264,7 +266,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.users.some(item => item.id === user.id && item.updatedAt === user.updatedAt),
-      '使用者更新未成功寫入資料庫。'
+      '\u4f7f\u7528\u8005\u66f4\u65b0\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
     );
     sendJson(res, 200, { user: publicUser(user), storage });
     return;
@@ -277,7 +279,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  sendJson(res, 404, { error: 'NOT_FOUND', message: '找不到 API。' });
+  sendJson(res, 404, { error: 'NOT_FOUND', message: '\u627e\u4e0d\u5230 API\u3002' });
 }
 
 async function serveStatic(req, res, url) {
@@ -317,7 +319,7 @@ async function sendFactoriesCsv(res) {
 
 async function syncCustomerStateToSheet(customerId, customerState, user) {
   if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet 寫回尚未設定。' };
+    return { enabled: false, ok: false, message: 'Google Sheet writeback is not configured.' };
   }
 
   try {
@@ -346,7 +348,7 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
       enabled: true,
       ok: response.ok && payload.ok !== false,
       status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet 已同步。' : 'Google Sheet 同步失敗。'),
+      message: payload.message || (response.ok ? 'Google Sheet synced.' : 'Google Sheet sync failed.'),
       row: payload.row || null
     };
   } catch (error) {
@@ -356,7 +358,7 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
 
 async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
   if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet 寫回尚未設定。' };
+    return { enabled: false, ok: false, message: 'Google Sheet writeback is not configured.' };
   }
 
   try {
@@ -385,7 +387,7 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
       enabled: true,
       ok: response.ok && payload.ok !== false,
       status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet 已同步。' : 'Google Sheet 同步失敗。'),
+      message: payload.message || (response.ok ? 'Google Sheet synced.' : 'Google Sheet sync failed.'),
       row: payload.row || null
     };
   } catch (error) {
@@ -396,23 +398,30 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
 async function ensureDb() {
   await fsp.mkdir(dataDir, { recursive: true });
   if (!fs.existsSync(dbPath)) {
+    const remoteDb = await loadRemoteDbBackup();
+    if (remoteDb) {
+      await writeDb(remoteDb);
+      return;
+    }
+
     const db = structuredClone(defaultDb);
     db.users.push({
       id: crypto.randomUUID(),
       username: 'admin',
-      displayName: '系統管理員',
+      displayName: '\u7cfb\u7d71\u7ba1\u7406\u54e1',
       role: 'admin',
       active: true,
       password: hashPassword('admin123'),
       createdAt: new Date().toISOString()
     });
     await writeDb(db);
+    await saveRemoteDbBackup(db);
   }
 }
 
 async function readDb() {
   const raw = (await fsp.readFile(dbPath, 'utf8')).replace(/^\uFEFF/, '');
-  return { ...structuredClone(defaultDb), ...JSON.parse(raw) };
+  return normalizeDb(JSON.parse(raw));
 }
 
 async function writeDb(db) {
@@ -420,7 +429,7 @@ async function writeDb(db) {
   const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
   let moved = false;
   try {
-    await fsp.writeFile(tempPath, JSON.stringify(db, null, 2), 'utf8');
+    await fsp.writeFile(tempPath, JSON.stringify(normalizeDb(db), null, 2), 'utf8');
     await fsp.rename(tempPath, dbPath);
     moved = true;
   } finally {
@@ -434,7 +443,67 @@ async function writeDbAndVerify(db, verifier, message) {
   if (!verifier(saved)) {
     throw httpError(500, 'DB_WRITE_VERIFY_FAILED', message);
   }
+  await saveRemoteDbBackup(saved);
   return saved;
+}
+
+async function loadRemoteDbBackup() {
+  if (!remoteDbBackupEnabled) return null;
+
+  try {
+    const payload = await postSheetAction('loadDbBackup', {});
+    if (!payload.ok || !payload.db) return null;
+    return normalizeDb(payload.db);
+  } catch (error) {
+    console.warn(`Remote DB backup load failed: ${error.message}`);
+    return null;
+  }
+}
+
+async function saveRemoteDbBackup(db) {
+  if (!remoteDbBackupEnabled) return { enabled: false, ok: false };
+
+  const payload = await postSheetAction('saveDbBackup', {
+    db: normalizeDb(db),
+    savedAt: new Date().toISOString()
+  });
+  if (!payload.ok) {
+    throw httpError(502, 'DB_REMOTE_BACKUP_FAILED', payload.message || 'Google Sheet backend backup failed.');
+  }
+  return { enabled: true, ok: true, savedAt: payload.savedAt || null };
+}
+
+async function postSheetAction(action, payload) {
+  const response = await fetch(sheetWriteUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({
+      secret: sheetWriteSecret,
+      action,
+      ...payload
+    })
+  });
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { ok: false, message: text.slice(0, 300) };
+  }
+  if (!response.ok) {
+    throw httpError(502, 'SHEET_BACKUP_HTTP_ERROR', data.message || `Google Sheet HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function normalizeDb(value) {
+  const db = value && typeof value === 'object' ? value : {};
+  return {
+    users: Array.isArray(db.users) ? db.users : [],
+    customerStates: db.customerStates && typeof db.customerStates === 'object' ? db.customerStates : {},
+    customerProfiles: db.customerProfiles && typeof db.customerProfiles === 'object' ? db.customerProfiles : {},
+    auditLogs: Array.isArray(db.auditLogs) ? db.auditLogs.slice(-5000) : []
+  };
 }
 
 async function requireAuth(req, res) {
@@ -442,7 +511,7 @@ async function requireAuth(req, res) {
   const session = sessionId ? sessions.get(sessionId) : null;
   if (!session || session.expiresAt < Date.now()) {
     if (sessionId) sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '請先登入。' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '\u8acb\u5148\u767b\u5165\u3002' });
     return null;
   }
   session.expiresAt = Date.now() + sessionTtlMs;
@@ -450,7 +519,7 @@ async function requireAuth(req, res) {
   const user = db.users.find(item => item.id === session.userId && item.active !== false);
   if (!user) {
     sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '使用者已停用。' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '\u4f7f\u7528\u8005\u5df2\u505c\u7528\u3002' });
     return null;
   }
   return { user };
@@ -545,7 +614,8 @@ function getStorageStatus() {
     dbPath,
     configuredByEnv: Boolean(process.env.DATA_DIR),
     render: Boolean(process.env.RENDER),
-    likelyPersistent: !isLikelyEphemeralDataDir()
+    likelyPersistent: !isLikelyEphemeralDataDir(),
+    remoteBackupEnabled: remoteDbBackupEnabled
   };
 }
 
@@ -562,12 +632,11 @@ function httpError(status, code, message) {
   return error;
 }
 
-
 function sanitizeStatus(value) {
   return ['todo', 'follow', 'visited', 'closed'].includes(value) ? value : 'todo';
 }
 
 function sanitizeGrade(value) {
   const grade = cleanString(value).toUpperCase();
-  return ['AA', 'A', 'B', 'C', '潛能', '光多辦理', '未分級', ''].includes(grade) ? grade : grade.slice(0, 20);
+  return ['AA', 'A', 'B', 'C', '\u6f5b\u80fd', '\u5149\u591a\u8fa6\u7406', '\u672a\u5206\u7d1a', ''].includes(grade) ? grade : grade.slice(0, 20);
 }

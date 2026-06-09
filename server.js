@@ -638,5 +638,5 @@ function sanitizeStatus(value) {
 
 function sanitizeGrade(value) {
   const grade = cleanString(value).toUpperCase();
-  return ['AA', 'A', 'B', 'C', '\u6f5b\u80fd', '\u5149\u591a\u8fa6\u7406', '\u672a\u5206\u7d1a', ''].includes(grade) ? grade : grade.slice(0, 20);
+  return ['AA', 'A', 'B', 'C', 'D', '\u6f5b\u80fd', '\u5149\u591a\u8fa6\u7406', '\u672a\u5206\u7d1a', ''].includes(grade) ? grade : grade.slice(0, 20);
 }

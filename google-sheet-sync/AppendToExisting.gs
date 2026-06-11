@@ -77,7 +77,7 @@ function appendLog_(sheet, headers, row, payload) {
   var col = findColumnIndex(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
   if (col === -1) return;
   var today = Utilities.formatDate(new Date(), 'GMT+8', 'MM/dd');
-  var log = '[' + today + '] ' + payload.note + (payload.updatedBy ? ' (' + payload.updatedBy + ')' : '');
+  var log = '[' + today + '] ' + payload.note + (payload.salesperson ? ' (' + payload.salesperson + ')' : '');
   var cell = sheet.getRange(row, col + 1);
   var oldLog = String(cell.getValue() || '');
   if (oldLog.indexOf(payload.note) === -1) cell.setValue(oldLog ? log + '\n' + oldLog : log);

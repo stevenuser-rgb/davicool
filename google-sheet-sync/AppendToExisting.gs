@@ -52,25 +52,49 @@ function writebackFactory_(payload) {
   if (data.length < 2) return { ok: false, message: 'Main sheet has no data' };
   var headers = data[0].map(function(value) { return String(value || '').trim(); });
   var idIdx = findColumnIndex(headers, ['\u5de5\u5ee0\u767b\u8a18\u7de8\u865f', '\u5ee0\u7de8', '\u7de8\u865f']);
+  var regionIdx = findColumnIndex(headers, ['\u6240\u5c6c\u5340\u57df', '\u5340\u57df']);
+  var companyIdx = findColumnIndex(headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8']);
   if (idIdx === -1) return { ok: false, message: 'Factory id column not found' };
   var target = norm_(factoryId);
+  var targetRegion = norm_(payload.region || '');
+  var targetCompany = norm_(payload.sourceCompany || '');
+  var matchRows = [];
   for (var i = 1; i < data.length; i++) {
     if (norm_(data[i][idIdx]) !== target) continue;
-    var row = i + 1;
-    setIfPresent_(sheet, row, headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8'], payload, 'company');
-    setIfPresent_(sheet, row, headers, ['\u5de5\u5ee0\u5730\u5740', '\u5730\u5740', '\u5ee0\u5740'], payload, 'address');
-    setIfPresent_(sheet, row, headers, ['\u8ca0\u8cac\u4eba\u59d3\u540d', '\u8ca0\u8cac\u4eba', '\u806f\u7d61\u4eba'], payload, 'owner');
-    setIfPresent_(sheet, row, headers, ['\u96fb\u8a71', '\u806f\u7d61\u96fb\u8a71', '\u624b\u6a5f'], payload, 'phone');
-    setIfPresent_(sheet, row, headers, ['\u5ba2\u6236\u5206\u7d1a', '\u5206\u7d1a', '\u7b49\u7d1a'], payload, 'grade');
-    setHeaderValue_(sheet, headers, row, '\u958b\u767c\u696d\u52d9', payload.salesperson || '');
-    setHeaderValue_(sheet, headers, row, '\u8ffd\u8e64\u72c0\u614b', statusLabel_(payload.status || ''));
-    if (has_(payload, 'nextDate')) setHeaderValue_(sheet, headers, row, '\u4e0b\u6b21\u8ffd\u8e64\u65e5', payload.nextDate || '');
-    setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u8005', payload.updatedBy || '');
-    setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u6642\u9593', payload.updatedAt || new Date().toISOString());
-    if (payload.note) appendLog_(sheet, headers, row, payload);
-    return { ok: true, message: 'Google Sheet synced', row: row };
+    matchRows.push(i + 1);
   }
-  return { ok: false, message: 'Factory id not found: ' + factoryId };
+  var row = resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyIdx, targetRegion, targetCompany);
+  if (!row) return { ok: false, message: 'Factory row not found: ' + factoryId };
+  setIfPresent_(sheet, row, headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8'], payload, 'company');
+  setIfPresent_(sheet, row, headers, ['\u5de5\u5ee0\u5730\u5740', '\u5730\u5740', '\u5ee0\u5740'], payload, 'address');
+  setIfPresent_(sheet, row, headers, ['\u8ca0\u8cac\u4eba\u59d3\u540d', '\u8ca0\u8cac\u4eba', '\u806f\u7d61\u4eba'], payload, 'owner');
+  setIfPresent_(sheet, row, headers, ['\u96fb\u8a71', '\u806f\u7d61\u96fb\u8a71', '\u624b\u6a5f'], payload, 'phone');
+  setIfPresent_(sheet, row, headers, ['\u5ba2\u6236\u5206\u7d1a', '\u5206\u7d1a', '\u7b49\u7d1a'], payload, 'grade');
+  setHeaderValue_(sheet, headers, row, '\u958b\u767c\u696d\u52d9', payload.salesperson || '');
+  setHeaderValue_(sheet, headers, row, '\u8ffd\u8e64\u72c0\u614b', statusLabel_(payload.status || ''));
+  if (has_(payload, 'nextDate')) setHeaderValue_(sheet, headers, row, '\u4e0b\u6b21\u8ffd\u8e64\u65e5', payload.nextDate || '');
+  setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u8005', payload.updatedBy || '');
+  setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u6642\u9593', payload.updatedAt || new Date().toISOString());
+  if (payload.note) appendLog_(sheet, headers, row, payload);
+  return { ok: true, message: 'Google Sheet synced', row: row };
+}
+
+function resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyIdx, targetRegion, targetCompany) {
+  if (!matchRows.length) return 0;
+  if (matchRows.length === 1) return matchRows[0];
+  if (targetRegion && regionIdx !== -1) {
+    for (var i = 0; i < matchRows.length; i++) {
+      var regionValue = norm_(data[matchRows[i] - 1][regionIdx]);
+      if (regionValue === targetRegion) return matchRows[i];
+    }
+  }
+  if (targetCompany && companyIdx !== -1) {
+    for (var j = 0; j < matchRows.length; j++) {
+      var companyValue = norm_(data[matchRows[j] - 1][companyIdx]);
+      if (companyValue === targetCompany) return matchRows[j];
+    }
+  }
+  return 0;
 }
 
 function appendLog_(sheet, headers, row, payload) {

@@ -146,6 +146,9 @@ async function handleApi(req, res, url) {
     db.customerProfiles = db.customerProfiles || {};
     const current = db.customerProfiles[customerId] || {};
     const customerProfile = {
+      factoryId: cleanString(body.factoryId ?? current.factoryId ?? ''),
+      region: cleanString(body.region ?? current.region ?? ''),
+      sourceCompany: cleanString(body.sourceCompany ?? current.sourceCompany ?? current.company ?? ''),
       company: cleanString(body.company ?? current.company ?? ''),
       owner: cleanString(body.owner ?? current.owner ?? ''),
       phone: cleanString(body.phone ?? current.phone ?? ''),
@@ -179,6 +182,9 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const current = db.customerStates[customerId] || {};
     const customerState = {
+      factoryId: cleanString(body.factoryId ?? current.factoryId ?? ''),
+      region: cleanString(body.region ?? current.region ?? ''),
+      sourceCompany: cleanString(body.sourceCompany ?? current.sourceCompany ?? ''),
       status: sanitizeStatus(body.status ?? current.status ?? 'todo'),
       grade: sanitizeGrade(body.grade ?? current.grade ?? ''),
       nextDate: cleanString(body.nextDate ?? current.nextDate ?? ''),
@@ -410,7 +416,10 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         secret: sheetWriteSecret,
-        factoryId: customerId,
+        recordId: customerId,
+        factoryId: customerState.factoryId,
+        region: customerState.region,
+        sourceCompany: customerState.sourceCompany,
         grade: customerState.grade,
         status: customerState.status,
         nextDate: customerState.nextDate,
@@ -450,7 +459,10 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         secret: sheetWriteSecret,
-        factoryId: customerId,
+        recordId: customerId,
+        factoryId: customerProfile.factoryId,
+        region: customerProfile.region,
+        sourceCompany: customerProfile.sourceCompany,
         company: customerProfile.company,
         owner: customerProfile.owner,
         phone: customerProfile.phone,

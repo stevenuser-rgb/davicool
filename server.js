@@ -29,6 +29,7 @@ const types = {
 
 const defaultDb = {
   users: [],
+  salespeople: [],
   customerStates: {},
   customerProfiles: {},
   auditLogs: []
@@ -128,7 +129,11 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/customer-states') {
     const db = await readDb();
-    sendJson(res, 200, { customerStates: db.customerStates || {}, customerProfiles: db.customerProfiles || {} });
+    sendJson(res, 200, {
+      customerStates: db.customerStates || {},
+      customerProfiles: db.customerProfiles || {},
+      salespeople: (db.salespeople || []).map(publicSalesperson)
+    });
     return;
   }
 
@@ -178,9 +183,12 @@ async function handleApi(req, res, url) {
       grade: sanitizeGrade(body.grade ?? current.grade ?? ''),
       nextDate: cleanString(body.nextDate ?? current.nextDate ?? ''),
       note: cleanString(body.note ?? current.note ?? ''),
+      salespersonId: '',
+      salespersonName: '',
       updatedAt: new Date().toISOString(),
       updatedBy: auth.user.username
     };
+    applySalespersonToState(customerState, body.salespersonId ?? current.salespersonId ?? '', db, current);
 
     const sheetSync = await syncCustomerStateToSheet(customerId, customerState, auth.user);
     customerState.sheetSync = sheetSync;
@@ -189,6 +197,7 @@ async function handleApi(req, res, url) {
       customerId,
       status: customerState.status,
       grade: customerState.grade,
+      salespersonId: customerState.salespersonId,
       sheetSync
     }, true);
     await writeDbAndVerify(
@@ -200,7 +209,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs')) {
+  if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs') || url.pathname.startsWith('/api/salespeople')) {
     if (auth.user.role !== 'admin') {
       sendJson(res, 403, { error: 'FORBIDDEN', message: '\u9700\u8981\u7ba1\u7406\u54e1\u6b0a\u9650\u3002' });
       return;
@@ -210,6 +219,12 @@ async function handleApi(req, res, url) {
   if (req.method === 'GET' && url.pathname === '/api/users') {
     const db = await readDb();
     sendJson(res, 200, { users: db.users.map(publicUser) });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/salespeople') {
+    const db = await readDb();
+    sendJson(res, 200, { salespeople: (db.salespeople || []).map(publicSalesperson) });
     return;
   }
 
@@ -246,6 +261,38 @@ async function handleApi(req, res, url) {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/api/salespeople') {
+    const storage = getStorageStatus();
+    const body = await readJson(req);
+    const db = await readDb();
+    db.salespeople = db.salespeople || [];
+    const name = cleanString(body.name);
+    if (!name) {
+      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '\u8acb\u8f38\u5165\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u3002' });
+      return;
+    }
+    if (db.salespeople.some(item => cleanString(item.name).toLowerCase() === name.toLowerCase())) {
+      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u5df2\u5b58\u5728\u3002' });
+      return;
+    }
+    const salesperson = {
+      id: crypto.randomUUID(),
+      name,
+      active: body.active !== false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    db.salespeople.push(salesperson);
+    await writeAudit(db, auth.user, 'CREATE_SALESPERSON', { salespersonId: salesperson.id, name: salesperson.name }, true);
+    await writeDbAndVerify(
+      db,
+      saved => saved.salespeople.some(item => item.id === salesperson.id && item.name === salesperson.name),
+      '\u696d\u52d9\u4eba\u54e1\u540d\u55ae\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
+    );
+    sendJson(res, 201, { salesperson: publicSalesperson(salesperson), storage });
+    return;
+  }
+
   const userMatch = url.pathname.match(/^\/api\/users\/([^/]+)$/);
   if (userMatch && req.method === 'PUT') {
     const storage = getStorageStatus();
@@ -269,6 +316,41 @@ async function handleApi(req, res, url) {
       '\u4f7f\u7528\u8005\u66f4\u65b0\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
     );
     sendJson(res, 200, { user: publicUser(user), storage });
+    return;
+  }
+
+  const salespersonMatch = url.pathname.match(/^\/api\/salespeople\/([^/]+)$/);
+  if (salespersonMatch && req.method === 'PUT') {
+    const storage = getStorageStatus();
+    const salespersonId = decodeURIComponent(salespersonMatch[1]);
+    const body = await readJson(req);
+    const db = await readDb();
+    db.salespeople = db.salespeople || [];
+    const salesperson = db.salespeople.find(item => item.id === salespersonId);
+    if (!salesperson) {
+      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '\u627e\u4e0d\u5230\u696d\u52d9\u4eba\u54e1\u3002' });
+      return;
+    }
+    const name = cleanString(body.name ?? salesperson.name);
+    if (!name) {
+      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '\u8acb\u8f38\u5165\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u3002' });
+      return;
+    }
+    if (db.salespeople.some(item => item.id !== salesperson.id && cleanString(item.name).toLowerCase() === name.toLowerCase())) {
+      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u5df2\u5b58\u5728\u3002' });
+      return;
+    }
+    salesperson.name = name;
+    salesperson.active = body.active !== false;
+    salesperson.updatedAt = new Date().toISOString();
+    refreshSalespersonSnapshots(db, salesperson);
+    await writeAudit(db, auth.user, 'UPDATE_SALESPERSON', { salespersonId: salesperson.id, name: salesperson.name, active: salesperson.active }, true);
+    await writeDbAndVerify(
+      db,
+      saved => saved.salespeople.some(item => item.id === salesperson.id && item.updatedAt === salesperson.updatedAt),
+      '\u696d\u52d9\u4eba\u54e1\u540d\u55ae\u66f4\u65b0\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
+    );
+    sendJson(res, 200, { salesperson: publicSalesperson(salesperson), storage });
     return;
   }
 
@@ -333,6 +415,7 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
         status: customerState.status,
         nextDate: customerState.nextDate,
         note: customerState.note,
+        salesperson: customerState.salespersonName,
         updatedAt: customerState.updatedAt,
         updatedBy: user.username
       })
@@ -500,6 +583,7 @@ function normalizeDb(value) {
   const db = value && typeof value === 'object' ? value : {};
   return {
     users: Array.isArray(db.users) ? db.users : [],
+    salespeople: Array.isArray(db.salespeople) ? db.salespeople : [],
     customerStates: db.customerStates && typeof db.customerStates === 'object' ? db.customerStates : {},
     customerProfiles: db.customerProfiles && typeof db.customerProfiles === 'object' ? db.customerProfiles : {},
     auditLogs: Array.isArray(db.auditLogs) ? db.auditLogs.slice(-5000) : []
@@ -576,6 +660,16 @@ function publicUser(user) {
   };
 }
 
+function publicSalesperson(salesperson) {
+  return {
+    id: salesperson.id,
+    name: salesperson.name,
+    active: salesperson.active !== false,
+    createdAt: salesperson.createdAt,
+    updatedAt: salesperson.updatedAt
+  };
+}
+
 async function writeAudit(db, user, action, details, success) {
   db.auditLogs = db.auditLogs || [];
   db.auditLogs.push({
@@ -597,6 +691,28 @@ function cleanString(value) {
 function cleanEnv(value) {
   const result = cleanString(value);
   return result || '';
+}
+
+function applySalespersonToState(customerState, salespersonId, db, current) {
+  const selectedId = cleanString(salespersonId);
+  if (!selectedId) return;
+
+  const salesperson = (db.salespeople || []).find(item => item.id === selectedId);
+  if (!salesperson || (salesperson.active === false && current?.salespersonId !== selectedId)) {
+    throw httpError(400, 'INVALID_SALESPERSON', '\u8acb\u9078\u64c7\u6709\u6548\u7684\u958b\u767c\u696d\u52d9\u3002');
+  }
+
+  customerState.salespersonId = salesperson.id;
+  customerState.salespersonName = salesperson.name;
+}
+
+function refreshSalespersonSnapshots(db, salesperson) {
+  if (!db.customerStates || typeof db.customerStates !== 'object') return;
+  for (const state of Object.values(db.customerStates)) {
+    if (state && state.salespersonId === salesperson.id) {
+      state.salespersonName = salesperson.name;
+    }
+  }
 }
 
 function resolveDataDir() {

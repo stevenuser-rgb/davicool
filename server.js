@@ -3,6 +3,10 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const { buildPromptBundle } = require('./shanshui/src/prompts');
+const { validateReportHtml } = require('./shanshui/src/validator');
+const { renderReportHtml } = require('./shanshui/src/render');
+const { generateMockReport, generateMockExtension, generateMockChat } = require('./shanshui/src/mock-provider');
 
 const appRoot = __dirname;
 const publicRoot = appRoot;
@@ -12,6 +16,8 @@ const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || '0.0.0.0';
 const sessionTtlMs = 1000 * 60 * 60 * 12;
 const sessions = new Map();
+const shanshuiPromptsRoot = path.join(appRoot, 'shanshui', 'prompts');
+const shanshuiSpecRoot = path.join(appRoot, 'shanshui', 'spec');
 
 const sheetCsvUrl = 'https://docs.google.com/spreadsheets/d/185NZwvJFPTsgi0H99mpl8KsDg_cMxxRbIwGu0N2Agko/export?format=csv';
 const sheetWriteUrl = cleanEnv(process.env.GOOGLE_SHEET_WRITE_URL);
@@ -134,6 +140,71 @@ async function handleApi(req, res, url) {
       customerProfiles: db.customerProfiles || {},
       salespeople: (db.salespeople || []).map(publicSalesperson)
     });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/shanshui/config') {
+    sendJson(res, 200, {
+      providerMode: getShanshuiProviderMode(),
+      prompts: await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot })
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/shanshui/health') {
+    sendJson(res, 200, {
+      ok: true,
+      providerMode: getShanshuiProviderMode(),
+      hasGeminiKey: Boolean(cleanEnv(process.env.GEMINI_API_KEY))
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/shanshui/report') {
+    const body = await readJson(req);
+    const input = normalizeShanshuiReportInput(body);
+    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
+    const generated = await generateShanshuiReportFromProvider(input, prompts);
+    const html = generated.html || renderReportHtml(generated.report);
+    const validation = validateReportHtml(html, prompts.reportSpec);
+    sendJson(res, 200, {
+      report: generated.report,
+      html,
+      validation,
+      provider: generated.provider
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/shanshui/extension') {
+    const body = await readJson(req);
+    const mode = cleanString(body.mode);
+    const reportHtml = cleanString(body.reportHtml);
+    if (!mode || !reportHtml) {
+      sendJson(res, 400, { error: 'INVALID_EXTENSION_INPUT', message: 'mode and reportHtml are required.' });
+      return;
+    }
+    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
+    const result = await generateShanshuiExtensionFromProvider({ mode, reportHtml }, prompts);
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/shanshui/chat') {
+    const body = await readJson(req);
+    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
+    const result = await generateShanshuiChatFromProvider({
+      message: cleanString(body.message),
+      reportHtml: cleanString(body.reportHtml)
+    }, prompts);
+    sendJson(res, 200, result);
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/shanshui/validate') {
+    const body = await readJson(req);
+    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
+    sendJson(res, 200, validateReportHtml(cleanString(body.html), prompts.reportSpec));
     return;
   }
 
@@ -758,6 +829,101 @@ function httpError(status, code, message) {
   error.httpStatus = status;
   error.code = code;
   return error;
+}
+
+function getShanshuiProviderMode() {
+  return cleanEnv(process.env.SHANSHUI_PROVIDER_MODE).toLowerCase() === 'live' ? 'live' : 'mock';
+}
+
+function normalizeShanshuiReportInput(body) {
+  return {
+    company: cleanString(body.company),
+    factoryNumber: cleanString(body.factoryNumber),
+    address: cleanString(body.address),
+    quote: cleanString(body.quote),
+    zoningMode: cleanString(body.zoningMode) || '待查證',
+    notes: cleanString(body.notes)
+  };
+}
+
+async function generateShanshuiReportFromProvider(input, prompts) {
+  if (getShanshuiProviderMode() === 'mock' || !cleanEnv(process.env.GEMINI_API_KEY)) {
+    return generateMockReport(input, prompts.reportSpec);
+  }
+
+  const prompt = [
+    prompts.reportPrompt,
+    '',
+    '輸入資料：',
+    JSON.stringify(input, null, 2),
+    '',
+    '請先以結構化 JSON 回傳八段內容，再由系統渲染。'
+  ].join('\n');
+  const providerText = await callShanshuiGeminiText(prompt, cleanEnv(process.env.GEMINI_API_KEY));
+  const parsed = safeParseJson(providerText);
+  if (!parsed) {
+    return generateMockReport(input, prompts.reportSpec);
+  }
+  return {
+    provider: 'gemini',
+    report: parsed,
+    html: renderReportHtml(parsed)
+  };
+}
+
+async function generateShanshuiExtensionFromProvider(input, prompts) {
+  if (getShanshuiProviderMode() === 'mock' || !cleanEnv(process.env.GEMINI_API_KEY)) {
+    return generateMockExtension(input, prompts);
+  }
+  const prompt = [
+    prompts.extensionPrompts[input.mode] || prompts.extensionPrompts.summary,
+    '',
+    input.reportHtml
+  ].join('\n');
+  const text = await callShanshuiGeminiText(prompt, cleanEnv(process.env.GEMINI_API_KEY));
+  return { mode: input.mode, text, provider: 'gemini' };
+}
+
+async function generateShanshuiChatFromProvider(input, prompts) {
+  if (getShanshuiProviderMode() === 'mock' || !cleanEnv(process.env.GEMINI_API_KEY)) {
+    return generateMockChat(input, prompts);
+  }
+  const prompt = [
+    prompts.chatPrompt,
+    '',
+    '報告內容：',
+    input.reportHtml || '尚無報告',
+    '',
+    '問題：',
+    input.message
+  ].join('\n');
+  const text = await callShanshuiGeminiText(prompt, cleanEnv(process.env.GEMINI_API_KEY));
+  return { text, provider: 'gemini' };
+}
+
+async function callShanshuiGeminiText(prompt, apiKey) {
+  const model = cleanEnv(process.env.GEMINI_MODEL) || 'gemini-2.5-flash';
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }]
+    })
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw httpError(502, 'GEMINI_HTTP_ERROR', text.slice(0, 400));
+  }
+  const payload = await response.json();
+  return payload.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+function safeParseJson(text) {
+  try {
+    return JSON.parse(String(text || '').replace(/```json/g, '').replace(/```/g, '').trim());
+  } catch {
+    return null;
+  }
 }
 
 function sanitizeStatus(value) {

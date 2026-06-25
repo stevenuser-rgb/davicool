@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>善水工商地產報告中心</title>
+  <link rel="stylesheet" href="/shanshui/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="side-panel">
+      <div class="brand-block">
+        <p class="eyebrow">Shanshui Report Center</p>
+        <h1>善水工商地產<br>報告中心</h1>
+        <p class="lede">接在小叮噹主站同一服務內的善水報告功能。這一版先把 prompt、規格、生成與驗證層拆開，避免繼續維持單檔 HTML 巨石。</p>
+      </div>
+      <form id="reportForm" class="input-panel">
+        <label>
+          <span>公司名稱</span>
+          <input name="company" placeholder="例如：宏瑜企業" />
+        </label>
+        <label>
+          <span>工廠編號</span>
+          <input name="factoryNumber" placeholder="例如：S6800431" />
+        </label>
+        <label>
+          <span>工廠實際地址</span>
+          <input name="address" placeholder="請輸入工廠實際地址" />
+        </label>
+        <label>
+          <span>報價金額</span>
+          <input name="quote" placeholder="例如：680000" />
+        </label>
+        <label>
+          <span>法規模式</span>
+          <select name="zoningMode">
+            <option value="待查證">待查證</option>
+            <option value="都內">都內</option>
+            <option value="都外">都外</option>
+          </select>
+        </label>
+        <label>
+          <span>案件備註</span>
+          <textarea name="notes" rows="4" placeholder="補充案件背景、文件狀況、已知風險"></textarea>
+        </label>
+        <div class="button-row">
+          <button type="submit" id="generateButton">生成報告</button>
+          <button type="button" id="validateButton">驗證結構</button>
+        </div>
+      </form>
+      <div class="status-panel">
+        <div>
+          <span class="label">Provider</span>
+          <strong id="providerMode">loading</strong>
+        </div>
+        <div>
+          <span class="label">Validator</span>
+          <strong id="validationState">idle</strong>
+        </div>
+      </div>
+      <a class="back-link" href="/">返回小叮噹主站</a>
+    </aside>
+    <main class="main-panel">
+      <section class="toolbar">
+        <button data-mode="summary" class="mode-button">重點摘要</button>
+        <button data-mode="pitch" class="mode-button">拜訪腳本</button>
+        <button data-mode="objection" class="mode-button">拒絕處理</button>
+        <button data-mode="email" class="mode-button">邀約信</button>
+        <button data-mode="followup" class="mode-button">跟進計畫</button>
+        <button data-mode="market" class="mode-button">產業洞察</button>
+      </section>
+      <section class="report-column">
+        <div class="report-header">
+          <div>
+            <p class="eyebrow">Preview</p>
+            <h2>報告預覽</h2>
+          </div>
+          <pre id="validationOutput" class="validation-output">尚未驗證</pre>
+        </div>
+        <div id="reportPreview" class="report-preview">
+          <div class="placeholder">
+            <p>請輸入案件資料後生成報告。</p>
+          </div>
+        </div>
+      </section>
+      <section class="extension-column">
+        <div class="report-header">
+          <div>
+            <p class="eyebrow">Assistant</p>
+            <h2>延伸內容</h2>
+          </div>
+        </div>
+        <div id="extensionOutput" class="extension-output">尚未執行延伸功能。</div>
+      </section>
+    </main>
+  </div>
+  <script src="/shanshui/app.js"></script>
+</body>
+</html>

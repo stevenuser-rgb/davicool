@@ -1,0 +1,13 @@
+{
+  "title": "善水工商地產報告章節規格",
+  "sections": [
+    { "key": "company", "title": "一、公司與工廠基本資料整理" },
+    { "key": "land", "title": "二、土地與地籍圖資分析" },
+    { "key": "regulation", "title": "三、土地使用與法規重點說明" },
+    { "key": "value", "title": "四、變更前後價值比較與增值試算" },
+    { "key": "deadline", "title": "五、說明提出用地變更最後的送件時間" },
+    { "key": "cost", "title": "六、現在申請與3年後申請之成本與風險差異分析" },
+    { "key": "risk", "title": "七、開發可行性評估與潛在風險說明" },
+    { "key": "recommendation", "title": "八、建議開發方向、執行步驟與客戶參考重點" }
+  ]
+}

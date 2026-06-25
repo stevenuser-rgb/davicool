@@ -2,6 +2,33 @@
 
 Render Web Service 部署用 Node.js 專案。
 
+## 善水報告功能
+
+已整合同站入口：
+
+```text
+/shanshui/
+```
+
+相關 API：
+
+```text
+/api/shanshui/health
+/api/shanshui/config
+/api/shanshui/report
+/api/shanshui/extension
+/api/shanshui/chat
+/api/shanshui/validate
+```
+
+預設為 `mock` 模式。若要改接真實 Gemini：
+
+```text
+SHANSHUI_PROVIDER_MODE=live
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-2.5-flash
+```
+
 ## Render 設定
 
 Build Command:

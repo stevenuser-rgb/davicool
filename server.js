@@ -3,10 +3,6 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
-const { buildPromptBundle } = require('./shanshui/src/prompts');
-const { validateReportHtml } = require('./shanshui/src/validator');
-const { renderReportHtml } = require('./shanshui/src/render');
-const { generateMockReport, generateMockExtension, generateMockChat } = require('./shanshui/src/mock-provider');
 
 const appRoot = __dirname;
 const publicRoot = appRoot;
@@ -16,8 +12,6 @@ const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || '0.0.0.0';
 const sessionTtlMs = 1000 * 60 * 60 * 12;
 const sessions = new Map();
-const shanshuiPromptsRoot = path.join(appRoot, 'shanshui', 'prompts');
-const shanshuiSpecRoot = path.join(appRoot, 'shanshui', 'spec');
 
 const sheetCsvUrl = 'https://docs.google.com/spreadsheets/d/185NZwvJFPTsgi0H99mpl8KsDg_cMxxRbIwGu0N2Agko/export?format=csv';
 const sheetWriteUrl = cleanEnv(process.env.GOOGLE_SHEET_WRITE_URL);
@@ -35,7 +29,6 @@ const types = {
 
 const defaultDb = {
   users: [],
-  salespeople: [],
   customerStates: {},
   customerProfiles: {},
   auditLogs: []
@@ -55,16 +48,15 @@ async function start() {
         sendJson(res, error.httpStatus, { error: error.code || 'REQUEST_ERROR', message: error.message });
         return;
       }
-      sendJson(res, 500, { error: 'SERVER_ERROR', message: 'Server error.' });
+      sendJson(res, 500, { error: 'SERVER_ERROR', message: '伺服器發生錯誤。' });
     });
   });
 
   server.listen(port, host, () => {
     console.log(`http://${host}:${port}/factory-crm-app/`);
     console.log(`Data directory: ${dataDir}`);
-    console.log(`Remote DB backup: ${remoteDbBackupEnabled ? 'enabled' : 'disabled'}`);
-    if (isLikelyEphemeralDataDir() && !remoteDbBackupEnabled) {
-      console.warn('WARNING: local filesystem is ephemeral and remote DB backup is disabled. Data may disappear after redeploy or restart.');
+    if (isLikelyEphemeralDataDir()) {
+      console.warn('WARNING: DATA_DIR is not set to a known persistent disk path. User and customer changes may disappear after a redeploy or restart.');
     }
   });
 }
@@ -86,7 +78,7 @@ async function handleApi(req, res, url) {
     if (!user || !verifyPassword(body.password || '', user.password)) {
       await writeAudit(db, null, 'LOGIN_FAILED', { username: body.username || '' }, false);
       await writeDb(db);
-      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '\u5e33\u865f\u6216\u5bc6\u78bc\u932f\u8aa4\u3002' });
+      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '帳號或密碼錯誤。' });
       return;
     }
 
@@ -124,7 +116,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/sheet-sync-status') {
-    sendJson(res, 200, { enabled: Boolean(sheetWriteUrl), hasSecret: Boolean(sheetWriteSecret), remoteDbBackupEnabled });
+    sendJson(res, 200, { enabled: Boolean(sheetWriteUrl), hasSecret: Boolean(sheetWriteSecret) });
     return;
   }
 
@@ -135,76 +127,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/customer-states') {
     const db = await readDb();
-    sendJson(res, 200, {
-      customerStates: db.customerStates || {},
-      customerProfiles: db.customerProfiles || {},
-      salespeople: (db.salespeople || []).map(publicSalesperson)
-    });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/shanshui/config') {
-    sendJson(res, 200, {
-      providerMode: getShanshuiProviderMode(),
-      prompts: await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot })
-    });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/api/shanshui/health') {
-    sendJson(res, 200, {
-      ok: true,
-      providerMode: getShanshuiProviderMode(),
-      hasGeminiKey: Boolean(cleanEnv(process.env.GEMINI_API_KEY))
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/shanshui/report') {
-    const body = await readJson(req);
-    const input = normalizeShanshuiReportInput(body);
-    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
-    const generated = await generateShanshuiReportFromProvider(input, prompts);
-    const html = generated.html || renderReportHtml(generated.report);
-    const validation = validateReportHtml(html, prompts.reportSpec);
-    sendJson(res, 200, {
-      report: generated.report,
-      html,
-      validation,
-      provider: generated.provider
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/shanshui/extension') {
-    const body = await readJson(req);
-    const mode = cleanString(body.mode);
-    const reportHtml = cleanString(body.reportHtml);
-    if (!mode || !reportHtml) {
-      sendJson(res, 400, { error: 'INVALID_EXTENSION_INPUT', message: 'mode and reportHtml are required.' });
-      return;
-    }
-    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
-    const result = await generateShanshuiExtensionFromProvider({ mode, reportHtml }, prompts);
-    sendJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/shanshui/chat') {
-    const body = await readJson(req);
-    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
-    const result = await generateShanshuiChatFromProvider({
-      message: cleanString(body.message),
-      reportHtml: cleanString(body.reportHtml)
-    }, prompts);
-    sendJson(res, 200, result);
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/shanshui/validate') {
-    const body = await readJson(req);
-    const prompts = await buildPromptBundle({ promptsRoot: shanshuiPromptsRoot, specRoot: shanshuiSpecRoot });
-    sendJson(res, 200, validateReportHtml(cleanString(body.html), prompts.reportSpec));
+    sendJson(res, 200, { customerStates: db.customerStates || {}, customerProfiles: db.customerProfiles || {} });
     return;
   }
 
@@ -217,9 +140,6 @@ async function handleApi(req, res, url) {
     db.customerProfiles = db.customerProfiles || {};
     const current = db.customerProfiles[customerId] || {};
     const customerProfile = {
-      factoryId: cleanString(body.factoryId ?? current.factoryId ?? ''),
-      region: cleanString(body.region ?? current.region ?? ''),
-      sourceCompany: cleanString(body.sourceCompany ?? current.sourceCompany ?? current.company ?? ''),
       company: cleanString(body.company ?? current.company ?? ''),
       owner: cleanString(body.owner ?? current.owner ?? ''),
       phone: cleanString(body.phone ?? current.phone ?? ''),
@@ -239,7 +159,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.customerProfiles?.[customerId]?.updatedAt === customerProfile.updatedAt,
-      '\u5ba2\u6236\u8cc7\u6599\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
+      '客戶資料未成功寫入資料庫。'
     );
     sendJson(res, 200, { customerProfile, sheetSync, storage });
     return;
@@ -253,19 +173,13 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const current = db.customerStates[customerId] || {};
     const customerState = {
-      factoryId: cleanString(body.factoryId ?? current.factoryId ?? ''),
-      region: cleanString(body.region ?? current.region ?? ''),
-      sourceCompany: cleanString(body.sourceCompany ?? current.sourceCompany ?? ''),
       status: sanitizeStatus(body.status ?? current.status ?? 'todo'),
       grade: sanitizeGrade(body.grade ?? current.grade ?? ''),
       nextDate: cleanString(body.nextDate ?? current.nextDate ?? ''),
       note: cleanString(body.note ?? current.note ?? ''),
-      salespersonId: '',
-      salespersonName: '',
       updatedAt: new Date().toISOString(),
       updatedBy: auth.user.username
     };
-    applySalespersonToState(customerState, body.salespersonId ?? current.salespersonId ?? '', db, current);
 
     const sheetSync = await syncCustomerStateToSheet(customerId, customerState, auth.user);
     customerState.sheetSync = sheetSync;
@@ -274,21 +188,20 @@ async function handleApi(req, res, url) {
       customerId,
       status: customerState.status,
       grade: customerState.grade,
-      salespersonId: customerState.salespersonId,
       sheetSync
     }, true);
     await writeDbAndVerify(
       db,
       saved => saved.customerStates?.[customerId]?.updatedAt === customerState.updatedAt,
-      '\u8ffd\u8e64\u7d00\u9304\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
+      '追蹤紀錄未成功寫入資料庫。'
     );
     sendJson(res, 200, { customerState, sheetSync, storage });
     return;
   }
 
-  if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs') || url.pathname.startsWith('/api/salespeople')) {
+  if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs')) {
     if (auth.user.role !== 'admin') {
-      sendJson(res, 403, { error: 'FORBIDDEN', message: '\u9700\u8981\u7ba1\u7406\u54e1\u6b0a\u9650\u3002' });
+      sendJson(res, 403, { error: 'FORBIDDEN', message: '需要管理員權限。' });
       return;
     }
   }
@@ -299,23 +212,17 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  if (req.method === 'GET' && url.pathname === '/api/salespeople') {
-    const db = await readDb();
-    sendJson(res, 200, { salespeople: (db.salespeople || []).map(publicSalesperson) });
-    return;
-  }
-
   if (req.method === 'POST' && url.pathname === '/api/users') {
     const storage = getStorageStatus();
     const body = await readJson(req);
     const db = await readDb();
     const username = cleanString(body.username);
     if (!username || !body.password) {
-      sendJson(res, 400, { error: 'INVALID_USER', message: '\u8acb\u8f38\u5165\u5e33\u865f\u8207\u5bc6\u78bc\u3002' });
+      sendJson(res, 400, { error: 'INVALID_USER', message: '請輸入帳號與密碼。' });
       return;
     }
     if (db.users.some(user => user.username === username)) {
-      sendJson(res, 409, { error: 'USER_EXISTS', message: '\u5e33\u865f\u5df2\u5b58\u5728\u3002' });
+      sendJson(res, 409, { error: 'USER_EXISTS', message: '帳號已存在。' });
       return;
     }
     const user = {
@@ -332,41 +239,9 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.users.some(item => item.id === user.id && item.username === user.username),
-      '\u4f7f\u7528\u8005\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
+      '使用者未成功寫入資料庫。'
     );
     sendJson(res, 201, { user: publicUser(user), storage });
-    return;
-  }
-
-  if (req.method === 'POST' && url.pathname === '/api/salespeople') {
-    const storage = getStorageStatus();
-    const body = await readJson(req);
-    const db = await readDb();
-    db.salespeople = db.salespeople || [];
-    const name = cleanString(body.name);
-    if (!name) {
-      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '\u8acb\u8f38\u5165\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u3002' });
-      return;
-    }
-    if (db.salespeople.some(item => cleanString(item.name).toLowerCase() === name.toLowerCase())) {
-      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u5df2\u5b58\u5728\u3002' });
-      return;
-    }
-    const salesperson = {
-      id: crypto.randomUUID(),
-      name,
-      active: body.active !== false,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    db.salespeople.push(salesperson);
-    await writeAudit(db, auth.user, 'CREATE_SALESPERSON', { salespersonId: salesperson.id, name: salesperson.name }, true);
-    await writeDbAndVerify(
-      db,
-      saved => saved.salespeople.some(item => item.id === salesperson.id && item.name === salesperson.name),
-      '\u696d\u52d9\u4eba\u54e1\u540d\u55ae\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
-    );
-    sendJson(res, 201, { salesperson: publicSalesperson(salesperson), storage });
     return;
   }
 
@@ -378,7 +253,7 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const user = db.users.find(item => item.id === userId);
     if (!user) {
-      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '\u627e\u4e0d\u5230\u4f7f\u7528\u8005\u3002' });
+      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '找不到使用者。' });
       return;
     }
     user.displayName = cleanString(body.displayName ?? user.displayName) || user.username;
@@ -390,44 +265,9 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.users.some(item => item.id === user.id && item.updatedAt === user.updatedAt),
-      '\u4f7f\u7528\u8005\u66f4\u65b0\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
+      '使用者更新未成功寫入資料庫。'
     );
     sendJson(res, 200, { user: publicUser(user), storage });
-    return;
-  }
-
-  const salespersonMatch = url.pathname.match(/^\/api\/salespeople\/([^/]+)$/);
-  if (salespersonMatch && req.method === 'PUT') {
-    const storage = getStorageStatus();
-    const salespersonId = decodeURIComponent(salespersonMatch[1]);
-    const body = await readJson(req);
-    const db = await readDb();
-    db.salespeople = db.salespeople || [];
-    const salesperson = db.salespeople.find(item => item.id === salespersonId);
-    if (!salesperson) {
-      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '\u627e\u4e0d\u5230\u696d\u52d9\u4eba\u54e1\u3002' });
-      return;
-    }
-    const name = cleanString(body.name ?? salesperson.name);
-    if (!name) {
-      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '\u8acb\u8f38\u5165\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u3002' });
-      return;
-    }
-    if (db.salespeople.some(item => item.id !== salesperson.id && cleanString(item.name).toLowerCase() === name.toLowerCase())) {
-      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '\u696d\u52d9\u4eba\u54e1\u540d\u7a31\u5df2\u5b58\u5728\u3002' });
-      return;
-    }
-    salesperson.name = name;
-    salesperson.active = body.active !== false;
-    salesperson.updatedAt = new Date().toISOString();
-    refreshSalespersonSnapshots(db, salesperson);
-    await writeAudit(db, auth.user, 'UPDATE_SALESPERSON', { salespersonId: salesperson.id, name: salesperson.name, active: salesperson.active }, true);
-    await writeDbAndVerify(
-      db,
-      saved => saved.salespeople.some(item => item.id === salesperson.id && item.updatedAt === salesperson.updatedAt),
-      '\u696d\u52d9\u4eba\u54e1\u540d\u55ae\u66f4\u65b0\u672a\u6210\u529f\u5beb\u5165\u8cc7\u6599\u5eab\u3002'
-    );
-    sendJson(res, 200, { salesperson: publicSalesperson(salesperson), storage });
     return;
   }
 
@@ -438,7 +278,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  sendJson(res, 404, { error: 'NOT_FOUND', message: '\u627e\u4e0d\u5230 API\u3002' });
+  sendJson(res, 404, { error: 'NOT_FOUND', message: '找不到 API。' });
 }
 
 async function serveStatic(req, res, url) {
@@ -478,7 +318,7 @@ async function sendFactoriesCsv(res) {
 
 async function syncCustomerStateToSheet(customerId, customerState, user) {
   if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet writeback is not configured.' };
+    return { enabled: false, ok: false, message: 'Google Sheet 寫回尚未設定。' };
   }
 
   try {
@@ -487,15 +327,11 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         secret: sheetWriteSecret,
-        recordId: customerId,
-        factoryId: customerState.factoryId,
-        region: customerState.region,
-        sourceCompany: customerState.sourceCompany,
+        factoryId: customerId,
         grade: customerState.grade,
         status: customerState.status,
         nextDate: customerState.nextDate,
         note: customerState.note,
-        salesperson: customerState.salespersonName,
         updatedAt: customerState.updatedAt,
         updatedBy: user.username
       })
@@ -511,7 +347,7 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
       enabled: true,
       ok: response.ok && payload.ok !== false,
       status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet synced.' : 'Google Sheet sync failed.'),
+      message: payload.message || (response.ok ? 'Google Sheet 已同步。' : 'Google Sheet 同步失敗。'),
       row: payload.row || null
     };
   } catch (error) {
@@ -521,7 +357,7 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
 
 async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
   if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet writeback is not configured.' };
+    return { enabled: false, ok: false, message: 'Google Sheet 寫回尚未設定。' };
   }
 
   try {
@@ -530,10 +366,7 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         secret: sheetWriteSecret,
-        recordId: customerId,
-        factoryId: customerProfile.factoryId,
-        region: customerProfile.region,
-        sourceCompany: customerProfile.sourceCompany,
+        factoryId: customerId,
         company: customerProfile.company,
         owner: customerProfile.owner,
         phone: customerProfile.phone,
@@ -553,7 +386,7 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
       enabled: true,
       ok: response.ok && payload.ok !== false,
       status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet synced.' : 'Google Sheet sync failed.'),
+      message: payload.message || (response.ok ? 'Google Sheet 已同步。' : 'Google Sheet 同步失敗。'),
       row: payload.row || null
     };
   } catch (error) {
@@ -574,20 +407,22 @@ async function ensureDb() {
     db.users.push({
       id: crypto.randomUUID(),
       username: 'admin',
-      displayName: '\u7cfb\u7d71\u7ba1\u7406\u54e1',
+      displayName: '系統管理員',
       role: 'admin',
       active: true,
       password: hashPassword('admin123'),
       createdAt: new Date().toISOString()
     });
     await writeDb(db);
-    await saveRemoteDbBackup(db);
+    await saveRemoteDbBackup(db).catch(error => {
+      console.warn(`Initial remote DB backup failed: ${error.message}`);
+    });
   }
 }
 
 async function readDb() {
   const raw = (await fsp.readFile(dbPath, 'utf8')).replace(/^\uFEFF/, '');
-  return normalizeDb(JSON.parse(raw));
+  return { ...structuredClone(defaultDb), ...JSON.parse(raw) };
 }
 
 async function writeDb(db) {
@@ -595,7 +430,7 @@ async function writeDb(db) {
   const tempPath = `${dbPath}.${process.pid}.${Date.now()}.tmp`;
   let moved = false;
   try {
-    await fsp.writeFile(tempPath, JSON.stringify(normalizeDb(db), null, 2), 'utf8');
+    await fsp.writeFile(tempPath, JSON.stringify(db, null, 2), 'utf8');
     await fsp.rename(tempPath, dbPath);
     moved = true;
   } finally {
@@ -666,7 +501,6 @@ function normalizeDb(value) {
   const db = value && typeof value === 'object' ? value : {};
   return {
     users: Array.isArray(db.users) ? db.users : [],
-    salespeople: Array.isArray(db.salespeople) ? db.salespeople : [],
     customerStates: db.customerStates && typeof db.customerStates === 'object' ? db.customerStates : {},
     customerProfiles: db.customerProfiles && typeof db.customerProfiles === 'object' ? db.customerProfiles : {},
     auditLogs: Array.isArray(db.auditLogs) ? db.auditLogs.slice(-5000) : []
@@ -678,7 +512,7 @@ async function requireAuth(req, res) {
   const session = sessionId ? sessions.get(sessionId) : null;
   if (!session || session.expiresAt < Date.now()) {
     if (sessionId) sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '\u8acb\u5148\u767b\u5165\u3002' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '請先登入。' });
     return null;
   }
   session.expiresAt = Date.now() + sessionTtlMs;
@@ -686,7 +520,7 @@ async function requireAuth(req, res) {
   const user = db.users.find(item => item.id === session.userId && item.active !== false);
   if (!user) {
     sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '\u4f7f\u7528\u8005\u5df2\u505c\u7528\u3002' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '使用者已停用。' });
     return null;
   }
   return { user };
@@ -743,16 +577,6 @@ function publicUser(user) {
   };
 }
 
-function publicSalesperson(salesperson) {
-  return {
-    id: salesperson.id,
-    name: salesperson.name,
-    active: salesperson.active !== false,
-    createdAt: salesperson.createdAt,
-    updatedAt: salesperson.updatedAt
-  };
-}
-
 async function writeAudit(db, user, action, details, success) {
   db.auditLogs = db.auditLogs || [];
   db.auditLogs.push({
@@ -774,28 +598,6 @@ function cleanString(value) {
 function cleanEnv(value) {
   const result = cleanString(value);
   return result || '';
-}
-
-function applySalespersonToState(customerState, salespersonId, db, current) {
-  const selectedId = cleanString(salespersonId);
-  if (!selectedId) return;
-
-  const salesperson = (db.salespeople || []).find(item => item.id === selectedId);
-  if (!salesperson || (salesperson.active === false && current?.salespersonId !== selectedId)) {
-    throw httpError(400, 'INVALID_SALESPERSON', '\u8acb\u9078\u64c7\u6709\u6548\u7684\u958b\u767c\u696d\u52d9\u3002');
-  }
-
-  customerState.salespersonId = salesperson.id;
-  customerState.salespersonName = salesperson.name;
-}
-
-function refreshSalespersonSnapshots(db, salesperson) {
-  if (!db.customerStates || typeof db.customerStates !== 'object') return;
-  for (const state of Object.values(db.customerStates)) {
-    if (state && state.salespersonId === salesperson.id) {
-      state.salespersonName = salesperson.name;
-    }
-  }
 }
 
 function resolveDataDir() {
@@ -831,100 +633,6 @@ function httpError(status, code, message) {
   return error;
 }
 
-function getShanshuiProviderMode() {
-  return cleanEnv(process.env.SHANSHUI_PROVIDER_MODE).toLowerCase() === 'live' ? 'live' : 'mock';
-}
-
-function normalizeShanshuiReportInput(body) {
-  return {
-    company: cleanString(body.company),
-    factoryNumber: cleanString(body.factoryNumber),
-    address: cleanString(body.address),
-    quote: cleanString(body.quote),
-    zoningMode: cleanString(body.zoningMode) || '待查證',
-    notes: cleanString(body.notes)
-  };
-}
-
-async function generateShanshuiReportFromProvider(input, prompts) {
-  if (getShanshuiProviderMode() === 'mock' || !cleanEnv(process.env.GEMINI_API_KEY)) {
-    return generateMockReport(input, prompts.reportSpec);
-  }
-
-  const prompt = [
-    prompts.reportPrompt,
-    '',
-    '輸入資料：',
-    JSON.stringify(input, null, 2),
-    '',
-    '請先以結構化 JSON 回傳八段內容，再由系統渲染。'
-  ].join('\n');
-  const providerText = await callShanshuiGeminiText(prompt, cleanEnv(process.env.GEMINI_API_KEY));
-  const parsed = safeParseJson(providerText);
-  if (!parsed) {
-    return generateMockReport(input, prompts.reportSpec);
-  }
-  return {
-    provider: 'gemini',
-    report: parsed,
-    html: renderReportHtml(parsed)
-  };
-}
-
-async function generateShanshuiExtensionFromProvider(input, prompts) {
-  if (getShanshuiProviderMode() === 'mock' || !cleanEnv(process.env.GEMINI_API_KEY)) {
-    return generateMockExtension(input, prompts);
-  }
-  const prompt = [
-    prompts.extensionPrompts[input.mode] || prompts.extensionPrompts.summary,
-    '',
-    input.reportHtml
-  ].join('\n');
-  const text = await callShanshuiGeminiText(prompt, cleanEnv(process.env.GEMINI_API_KEY));
-  return { mode: input.mode, text, provider: 'gemini' };
-}
-
-async function generateShanshuiChatFromProvider(input, prompts) {
-  if (getShanshuiProviderMode() === 'mock' || !cleanEnv(process.env.GEMINI_API_KEY)) {
-    return generateMockChat(input, prompts);
-  }
-  const prompt = [
-    prompts.chatPrompt,
-    '',
-    '報告內容：',
-    input.reportHtml || '尚無報告',
-    '',
-    '問題：',
-    input.message
-  ].join('\n');
-  const text = await callShanshuiGeminiText(prompt, cleanEnv(process.env.GEMINI_API_KEY));
-  return { text, provider: 'gemini' };
-}
-
-async function callShanshuiGeminiText(prompt, apiKey) {
-  const model = cleanEnv(process.env.GEMINI_MODEL) || 'gemini-2.5-flash';
-  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }]
-    })
-  });
-  if (!response.ok) {
-    const text = await response.text();
-    throw httpError(502, 'GEMINI_HTTP_ERROR', text.slice(0, 400));
-  }
-  const payload = await response.json();
-  return payload.candidates?.[0]?.content?.parts?.[0]?.text || '';
-}
-
-function safeParseJson(text) {
-  try {
-    return JSON.parse(String(text || '').replace(/```json/g, '').replace(/```/g, '').trim());
-  } catch {
-    return null;
-  }
-}
 
 function sanitizeStatus(value) {
   return ['todo', 'follow', 'visited', 'closed'].includes(value) ? value : 'todo';
@@ -932,5 +640,5 @@ function sanitizeStatus(value) {
 
 function sanitizeGrade(value) {
   const grade = cleanString(value).toUpperCase();
-  return ['AA', 'A', 'B', 'C', 'D', '\u6f5b\u80fd', '\u5149\u591a\u8fa6\u7406', '\u672a\u5206\u7d1a', ''].includes(grade) ? grade : grade.slice(0, 20);
+  return ['AA', 'A', 'B', 'C', 'D', '潛能', '光多辦理', '未分級', ''].includes(grade) ? grade : grade.slice(0, 20);
 }

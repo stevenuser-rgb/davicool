@@ -11,7 +11,7 @@ services:
       sizeGB: 1
     envVars:
       - key: DATA_DIR
-        value: /var/data
+        value: /opt/render/project/src/data
       - key: GOOGLE_SHEET_WRITE_URL
         sync: false
       - key: GOOGLE_SHEET_WRITE_SECRET

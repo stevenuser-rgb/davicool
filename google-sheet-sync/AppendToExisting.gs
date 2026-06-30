@@ -75,6 +75,7 @@ function writebackFactory_(payload) {
   if (has_(payload, 'nextDate')) setHeaderValue_(sheet, headers, row, '\u4e0b\u6b21\u8ffd\u8e64\u65e5', payload.nextDate || '');
   setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u8005', payload.updatedBy || '');
   setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u6642\u9593', payload.updatedAt || new Date().toISOString());
+  removeVisitLogDropdown_(sheet, headers);
   if (payload.note) appendLog_(sheet, headers, row, payload);
   return { ok: true, message: 'Google Sheet synced', row: row };
 }
@@ -105,6 +106,14 @@ function appendLog_(sheet, headers, row, payload) {
   var cell = sheet.getRange(row, col + 1);
   var oldLog = String(cell.getValue() || '');
   if (oldLog.indexOf(payload.note) === -1) cell.setValue(oldLog ? log + '\n' + oldLog : log);
+}
+
+function removeVisitLogDropdown_(sheet, headers) {
+  var col = findColumnIndex(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
+  if (col === -1) return;
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return;
+  sheet.getRange(2, col + 1, lastRow - 1, 1).clearDataValidations();
 }
 
 function setIfPresent_(sheet, row, headers, names, payload, key) {

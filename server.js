@@ -29,6 +29,7 @@ const types = {
 
 const defaultDb = {
   users: [],
+  salespeople: [],
   customerStates: {},
   customerProfiles: {},
   auditLogs: []
@@ -48,7 +49,7 @@ async function start() {
         sendJson(res, error.httpStatus, { error: error.code || 'REQUEST_ERROR', message: error.message });
         return;
       }
-      sendJson(res, 500, { error: 'SERVER_ERROR', message: '伺服器發生錯誤。' });
+      sendJson(res, 500, { error: 'SERVER_ERROR', message: '���A���o�Ϳ��~�C' });
     });
   });
 
@@ -78,7 +79,7 @@ async function handleApi(req, res, url) {
     if (!user || !verifyPassword(body.password || '', user.password)) {
       await writeAudit(db, null, 'LOGIN_FAILED', { username: body.username || '' }, false);
       await writeDb(db);
-      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '帳號或密碼錯誤。' });
+      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '�b���αK�X���~�C' });
       return;
     }
 
@@ -127,18 +128,22 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/customer-states') {
     const db = await readDb();
-    sendJson(res, 200, { customerStates: db.customerStates || {}, customerProfiles: db.customerProfiles || {} });
+    sendJson(res, 200, {
+      customerStates: db.customerStates || {},
+      customerProfiles: db.customerProfiles || {},
+      salespeople: db.salespeople || []
+    });
     return;
   }
 
   const customerMatch = url.pathname.match(/^\/api\/customers\/(.+)$/);
   if (req.method === 'PUT' && customerMatch) {
     const storage = getStorageStatus();
-    const customerId = decodeURIComponent(customerMatch[1]);
+    const customerKey = decodeURIComponent(customerMatch[1]);
     const body = await readJson(req);
     const db = await readDb();
     db.customerProfiles = db.customerProfiles || {};
-    const current = db.customerProfiles[customerId] || {};
+    const current = db.customerProfiles[customerKey] || {};
     const customerProfile = {
       company: cleanString(body.company ?? current.company ?? ''),
       owner: cleanString(body.owner ?? current.owner ?? ''),
@@ -148,18 +153,19 @@ async function handleApi(req, res, url) {
       updatedBy: auth.user.username
     };
 
-    const sheetSync = await syncCustomerProfileToSheet(customerId, customerProfile, auth.user);
+    const sheetSync = await syncCustomerProfileToSheet(customerKey, customerProfile, auth.user, body);
     customerProfile.sheetSync = sheetSync;
-    db.customerProfiles[customerId] = customerProfile;
+    db.customerProfiles[customerKey] = customerProfile;
     await writeAudit(db, auth.user, 'UPDATE_CUSTOMER_PROFILE', {
-      customerId,
+      customerKey,
+      factoryId: cleanString(body.factoryId || customerKey),
       fields: Object.keys(body || {}),
       sheetSync
     }, true);
     await writeDbAndVerify(
       db,
-      saved => saved.customerProfiles?.[customerId]?.updatedAt === customerProfile.updatedAt,
-      '客戶資料未成功寫入資料庫。'
+      saved => saved.customerProfiles?.[customerKey]?.updatedAt === customerProfile.updatedAt,
+      '�Ȥ��ƥ����\�g�J��Ʈw�C'
     );
     sendJson(res, 200, { customerProfile, sheetSync, storage });
     return;
@@ -168,42 +174,129 @@ async function handleApi(req, res, url) {
   const stateMatch = url.pathname.match(/^\/api\/customer-states\/(.+)$/);
   if (req.method === 'PUT' && stateMatch) {
     const storage = getStorageStatus();
-    const customerId = decodeURIComponent(stateMatch[1]);
+    const customerKey = decodeURIComponent(stateMatch[1]);
     const body = await readJson(req);
     const db = await readDb();
-    const current = db.customerStates[customerId] || {};
+    const current = db.customerStates[customerKey] || {};
     const customerState = {
       status: sanitizeStatus(body.status ?? current.status ?? 'todo'),
       grade: sanitizeGrade(body.grade ?? current.grade ?? ''),
       nextDate: cleanString(body.nextDate ?? current.nextDate ?? ''),
       note: cleanString(body.note ?? current.note ?? ''),
+      salesperson: cleanString(body.salesperson ?? current.salesperson ?? ''),
       updatedAt: new Date().toISOString(),
       updatedBy: auth.user.username
     };
 
-    const sheetSync = await syncCustomerStateToSheet(customerId, customerState, auth.user);
+    const sheetSync = await syncCustomerStateToSheet(customerKey, customerState, auth.user, body);
     customerState.sheetSync = sheetSync;
-    db.customerStates[customerId] = customerState;
+    db.customerStates[customerKey] = customerState;
     await writeAudit(db, auth.user, 'SAVE_CUSTOMER_STATE', {
-      customerId,
+      customerKey,
+      factoryId: cleanString(body.factoryId || customerKey),
       status: customerState.status,
       grade: customerState.grade,
+      salesperson: customerState.salesperson,
       sheetSync
     }, true);
     await writeDbAndVerify(
       db,
-      saved => saved.customerStates?.[customerId]?.updatedAt === customerState.updatedAt,
-      '追蹤紀錄未成功寫入資料庫。'
+      saved => saved.customerStates?.[customerKey]?.updatedAt === customerState.updatedAt,
+      '�l�ܬ��������\�g�J��Ʈw�C'
     );
     sendJson(res, 200, { customerState, sheetSync, storage });
     return;
   }
 
-  if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs')) {
+  if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs') || url.pathname.startsWith('/api/salespeople')) {
     if (auth.user.role !== 'admin') {
-      sendJson(res, 403, { error: 'FORBIDDEN', message: '需要管理員權限。' });
+      sendJson(res, 403, { error: 'FORBIDDEN', message: '�ݭn�޲z���v���C' });
       return;
     }
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/salespeople') {
+    const db = await readDb();
+    sendJson(res, 200, { salespeople: db.salespeople || [] });
+    return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/salespeople') {
+    const body = await readJson(req);
+    const db = await readDb();
+    db.salespeople = Array.isArray(db.salespeople) ? db.salespeople : [];
+    const name = cleanString(body.name);
+    if (!name) {
+      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '�п�J�~�ȩm�W�C' });
+      return;
+    }
+    if (db.salespeople.some(item => item.name === name)) {
+      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '�~�ȩm�W�w�s�b�C' });
+      return;
+    }
+    const salesperson = {
+      id: crypto.randomUUID(),
+      name,
+      active: body.active !== false,
+      createdAt: new Date().toISOString()
+    };
+    db.salespeople.push(salesperson);
+    await writeAudit(db, auth.user, 'CREATE_SALESPERSON', { name }, true);
+    await writeDbAndVerify(
+      db,
+      saved => saved.salespeople?.some(item => item.id === salesperson.id),
+      '�~�ȤH�������\�g�J��Ʈw�C'
+    );
+    sendJson(res, 201, { salesperson });
+    return;
+  }
+
+  const salespersonMatch = url.pathname.match(/^\/api\/salespeople\/([^/]+)$/);
+  if (salespersonMatch && req.method === 'PUT') {
+    const salespersonId = decodeURIComponent(salespersonMatch[1]);
+    const body = await readJson(req);
+    const db = await readDb();
+    db.salespeople = Array.isArray(db.salespeople) ? db.salespeople : [];
+    const salesperson = db.salespeople.find(item => item.id === salespersonId);
+    if (!salesperson) {
+      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '�䤣��~�ȤH���C' });
+      return;
+    }
+    const name = cleanString(body.name ?? salesperson.name);
+    if (!name) {
+      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '�п�J�~�ȩm�W�C' });
+      return;
+    }
+    salesperson.name = name;
+    salesperson.active = body.active !== false;
+    salesperson.updatedAt = new Date().toISOString();
+    await writeAudit(db, auth.user, 'UPDATE_SALESPERSON', { name, active: salesperson.active }, true);
+    await writeDbAndVerify(
+      db,
+      saved => saved.salespeople?.some(item => item.id === salesperson.id && item.updatedAt === salesperson.updatedAt),
+      '�~�ȤH����s�����\�g�J��Ʈw�C'
+    );
+    sendJson(res, 200, { salesperson });
+    return;
+  }
+  if (salespersonMatch && req.method === 'DELETE') {
+    const salespersonId = decodeURIComponent(salespersonMatch[1]);
+    const db = await readDb();
+    db.salespeople = Array.isArray(db.salespeople) ? db.salespeople : [];
+    const index = db.salespeople.findIndex(item => item.id === salespersonId);
+    if (index === -1) {
+      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '�䤣��~�ȤH���C' });
+      return;
+    }
+    const [salesperson] = db.salespeople.splice(index, 1);
+    await writeAudit(db, auth.user, 'DELETE_SALESPERSON', { id: salesperson.id, name: salesperson.name }, true);
+    await writeDbAndVerify(
+      db,
+      saved => !saved.salespeople?.some(item => item.id === salesperson.id),
+      '�~�ȤH���R�������\�g�J��Ʈw�C'
+    );
+    sendJson(res, 200, { ok: true, salesperson });
+    return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/users') {
@@ -218,11 +311,11 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const username = cleanString(body.username);
     if (!username || !body.password) {
-      sendJson(res, 400, { error: 'INVALID_USER', message: '請輸入帳號與密碼。' });
+      sendJson(res, 400, { error: 'INVALID_USER', message: '�п�J�b���P�K�X�C' });
       return;
     }
     if (db.users.some(user => user.username === username)) {
-      sendJson(res, 409, { error: 'USER_EXISTS', message: '帳號已存在。' });
+      sendJson(res, 409, { error: 'USER_EXISTS', message: '�b���w�s�b�C' });
       return;
     }
     const user = {
@@ -239,7 +332,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.users.some(item => item.id === user.id && item.username === user.username),
-      '使用者未成功寫入資料庫。'
+      '�ϥΪ̥����\�g�J��Ʈw�C'
     );
     sendJson(res, 201, { user: publicUser(user), storage });
     return;
@@ -253,7 +346,7 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const user = db.users.find(item => item.id === userId);
     if (!user) {
-      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '找不到使用者。' });
+      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '�䤣��ϥΪ̡C' });
       return;
     }
     user.displayName = cleanString(body.displayName ?? user.displayName) || user.username;
@@ -265,7 +358,7 @@ async function handleApi(req, res, url) {
     await writeDbAndVerify(
       db,
       saved => saved.users.some(item => item.id === user.id && item.updatedAt === user.updatedAt),
-      '使用者更新未成功寫入資料庫。'
+      '�ϥΪ̧�s�����\�g�J��Ʈw�C'
     );
     sendJson(res, 200, { user: publicUser(user), storage });
     return;
@@ -278,7 +371,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  sendJson(res, 404, { error: 'NOT_FOUND', message: '找不到 API。' });
+  sendJson(res, 404, { error: 'NOT_FOUND', message: '�䤣�� API�C' });
 }
 
 async function serveStatic(req, res, url) {
@@ -316,9 +409,9 @@ async function sendFactoriesCsv(res) {
   }
 }
 
-async function syncCustomerStateToSheet(customerId, customerState, user) {
+async function syncCustomerStateToSheet(customerKey, customerState, user, context = {}) {
   if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet 寫回尚未設定。' };
+    return { enabled: false, ok: false, message: 'Google Sheet �g�^�|���]�w�C' };
   }
 
   try {
@@ -327,11 +420,14 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         secret: sheetWriteSecret,
-        factoryId: customerId,
+        factoryId: cleanString(context.factoryId || customerKey),
+        region: cleanString(context.region || ''),
+        sourceCompany: cleanString(context.sourceCompany || ''),
         grade: customerState.grade,
         status: customerState.status,
         nextDate: customerState.nextDate,
         note: customerState.note,
+        salesperson: customerState.salesperson,
         updatedAt: customerState.updatedAt,
         updatedBy: user.username
       })
@@ -347,7 +443,7 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
       enabled: true,
       ok: response.ok && payload.ok !== false,
       status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet 已同步。' : 'Google Sheet 同步失敗。'),
+      message: payload.message || (response.ok ? 'Google Sheet �w�P�B�C' : 'Google Sheet �P�B���ѡC'),
       row: payload.row || null
     };
   } catch (error) {
@@ -355,9 +451,9 @@ async function syncCustomerStateToSheet(customerId, customerState, user) {
   }
 }
 
-async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
+async function syncCustomerProfileToSheet(customerKey, customerProfile, user, context = {}) {
   if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet 寫回尚未設定。' };
+    return { enabled: false, ok: false, message: 'Google Sheet �g�^�|���]�w�C' };
   }
 
   try {
@@ -366,7 +462,9 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },
       body: JSON.stringify({
         secret: sheetWriteSecret,
-        factoryId: customerId,
+        factoryId: cleanString(context.factoryId || customerKey),
+        region: cleanString(context.region || ''),
+        sourceCompany: cleanString(context.sourceCompany || ''),
         company: customerProfile.company,
         owner: customerProfile.owner,
         phone: customerProfile.phone,
@@ -386,14 +484,13 @@ async function syncCustomerProfileToSheet(customerId, customerProfile, user) {
       enabled: true,
       ok: response.ok && payload.ok !== false,
       status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet 已同步。' : 'Google Sheet 同步失敗。'),
+      message: payload.message || (response.ok ? 'Google Sheet �w�P�B�C' : 'Google Sheet �P�B���ѡC'),
       row: payload.row || null
     };
   } catch (error) {
     return { enabled: true, ok: false, message: error.message };
   }
 }
-
 async function ensureDb() {
   await fsp.mkdir(dataDir, { recursive: true });
   if (!fs.existsSync(dbPath)) {
@@ -407,7 +504,7 @@ async function ensureDb() {
     db.users.push({
       id: crypto.randomUUID(),
       username: 'admin',
-      displayName: '系統管理員',
+      displayName: '�t�κ޲z��',
       role: 'admin',
       active: true,
       password: hashPassword('admin123'),
@@ -501,6 +598,7 @@ function normalizeDb(value) {
   const db = value && typeof value === 'object' ? value : {};
   return {
     users: Array.isArray(db.users) ? db.users : [],
+    salespeople: Array.isArray(db.salespeople) ? db.salespeople : [],
     customerStates: db.customerStates && typeof db.customerStates === 'object' ? db.customerStates : {},
     customerProfiles: db.customerProfiles && typeof db.customerProfiles === 'object' ? db.customerProfiles : {},
     auditLogs: Array.isArray(db.auditLogs) ? db.auditLogs.slice(-5000) : []
@@ -512,7 +610,7 @@ async function requireAuth(req, res) {
   const session = sessionId ? sessions.get(sessionId) : null;
   if (!session || session.expiresAt < Date.now()) {
     if (sessionId) sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '請先登入。' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '�Х��n�J�C' });
     return null;
   }
   session.expiresAt = Date.now() + sessionTtlMs;
@@ -520,7 +618,7 @@ async function requireAuth(req, res) {
   const user = db.users.find(item => item.id === session.userId && item.active !== false);
   if (!user) {
     sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '使用者已停用。' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '�ϥΪ̤w���ΡC' });
     return null;
   }
   return { user };
@@ -640,5 +738,5 @@ function sanitizeStatus(value) {
 
 function sanitizeGrade(value) {
   const grade = cleanString(value).toUpperCase();
-  return ['AA', 'A', 'B', 'C', 'D', '潛能', '光多辦理', '未分級', ''].includes(grade) ? grade : grade.slice(0, 20);
+  return ['AA', 'A', 'B', 'C', 'D', '���', '���h��z', '������', ''].includes(grade) ? grade : grade.slice(0, 20);
 }

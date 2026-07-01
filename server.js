@@ -153,7 +153,7 @@ async function handleApi(req, res, url) {
       updatedBy: auth.user.username
     };
 
-    const sheetSync = await syncCustomerProfileToSheet(customerKey, customerProfile, auth.user, body);
+    const sheetSync = queueCustomerProfileSync(customerKey, customerProfile, auth.user, body);
     customerProfile.sheetSync = sheetSync;
     db.customerProfiles[customerKey] = customerProfile;
     await writeAudit(db, auth.user, 'UPDATE_CUSTOMER_PROFILE', {
@@ -188,7 +188,7 @@ async function handleApi(req, res, url) {
       updatedBy: auth.user.username
     };
 
-    const sheetSync = await syncCustomerStateToSheet(customerKey, customerState, auth.user, body);
+    const sheetSync = queueCustomerStateSync(customerKey, customerState, auth.user, body);
     customerState.sheetSync = sheetSync;
     db.customerStates[customerKey] = customerState;
     await writeAudit(db, auth.user, 'SAVE_CUSTOMER_STATE', {
@@ -451,6 +451,19 @@ async function syncCustomerStateToSheet(customerKey, customerState, user, contex
   }
 }
 
+function queueCustomerStateSync(customerKey, customerState, user, context = {}) {
+  if (!sheetWriteUrl) {
+    return { enabled: false, queued: false, ok: false, message: 'Google Sheet 寫回網址未設定' };
+  }
+
+  setTimeout(() => {
+    syncCustomerStateToSheet(customerKey, customerState, user, context).catch(error => {
+      console.warn(`Customer state sheet sync failed: ${error.message}`);
+    });
+  }, 0);
+
+  return { enabled: true, queued: true, ok: null, message: 'Google Sheet 同步已排程' };
+}
 async function syncCustomerProfileToSheet(customerKey, customerProfile, user, context = {}) {
   if (!sheetWriteUrl) {
     return { enabled: false, ok: false, message: 'Google Sheet �g�^�|���]�w�C' };
@@ -490,6 +503,19 @@ async function syncCustomerProfileToSheet(customerKey, customerProfile, user, co
   } catch (error) {
     return { enabled: true, ok: false, message: error.message };
   }
+}
+function queueCustomerProfileSync(customerKey, customerProfile, user, context = {}) {
+  if (!sheetWriteUrl) {
+    return { enabled: false, queued: false, ok: false, message: 'Google Sheet 寫回網址未設定' };
+  }
+
+  setTimeout(() => {
+    syncCustomerProfileToSheet(customerKey, customerProfile, user, context).catch(error => {
+      console.warn(`Customer profile sheet sync failed: ${error.message}`);
+    });
+  }, 0);
+
+  return { enabled: true, queued: true, ok: null, message: 'Google Sheet 同步已排程' };
 }
 async function ensureDb() {
   await fsp.mkdir(dataDir, { recursive: true });
@@ -541,10 +567,18 @@ async function writeDbAndVerify(db, verifier, message) {
   if (!verifier(saved)) {
     throw httpError(500, 'DB_WRITE_VERIFY_FAILED', message);
   }
-  await saveRemoteDbBackup(saved);
+  scheduleRemoteDbBackup(saved);
   return saved;
 }
 
+function scheduleRemoteDbBackup(db) {
+  if (!remoteDbBackupEnabled) return;
+  setTimeout(() => {
+    saveRemoteDbBackup(db).catch(error => {
+      console.warn(`Remote DB backup failed: ${error.message}`);
+    });
+  }, 0);
+}
 async function loadRemoteDbBackup() {
   if (!remoteDbBackupEnabled) return null;
 

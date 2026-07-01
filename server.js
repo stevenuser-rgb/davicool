@@ -462,7 +462,7 @@ function queueCustomerStateSync(customerKey, customerState, user, context = {}) 
     });
   }, 0);
 
-  return { enabled: true, queued: true, ok: null, message: 'Google Sheet 同步已排程' };
+  return { enabled: true, queued: true, ok: true, message: 'Google Sheet 同步已排程' };
 }
 async function syncCustomerProfileToSheet(customerKey, customerProfile, user, context = {}) {
   if (!sheetWriteUrl) {
@@ -515,7 +515,7 @@ function queueCustomerProfileSync(customerKey, customerProfile, user, context = 
     });
   }, 0);
 
-  return { enabled: true, queued: true, ok: null, message: 'Google Sheet 同步已排程' };
+  return { enabled: true, queued: true, ok: true, message: 'Google Sheet 同步已排程' };
 }
 async function ensureDb() {
   await fsp.mkdir(dataDir, { recursive: true });

@@ -49,7 +49,7 @@ async function start() {
         sendJson(res, error.httpStatus, { error: error.code || 'REQUEST_ERROR', message: error.message });
         return;
       }
-      sendJson(res, 500, { error: 'SERVER_ERROR', message: '���A���o�Ϳ��~�C' });
+      sendJson(res, 500, { error: 'SERVER_ERROR', message: '伺服器發生錯誤。' });
     });
   });
 
@@ -79,7 +79,7 @@ async function handleApi(req, res, url) {
     if (!user || !verifyPassword(body.password || '', user.password)) {
       await writeAudit(db, null, 'LOGIN_FAILED', { username: body.username || '' }, false);
       await writeDb(db);
-      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '�b���αK�X���~�C' });
+      sendJson(res, 401, { error: 'INVALID_LOGIN', message: '登入失敗，帳號或密碼錯誤。' });
       return;
     }
 
@@ -210,7 +210,7 @@ async function handleApi(req, res, url) {
 
   if (url.pathname.startsWith('/api/users') || url.pathname.startsWith('/api/audit-logs') || url.pathname.startsWith('/api/salespeople')) {
     if (auth.user.role !== 'admin') {
-      sendJson(res, 403, { error: 'FORBIDDEN', message: '�ݭn�޲z���v���C' });
+      sendJson(res, 403, { error: 'FORBIDDEN', message: '需要管理員權限。' });
       return;
     }
   }
@@ -227,11 +227,11 @@ async function handleApi(req, res, url) {
     db.salespeople = Array.isArray(db.salespeople) ? db.salespeople : [];
     const name = cleanString(body.name);
     if (!name) {
-      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '�п�J�~�ȩm�W�C' });
+      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '請輸入業務姓名。' });
       return;
     }
     if (db.salespeople.some(item => item.name === name)) {
-      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '�~�ȩm�W�w�s�b�C' });
+      sendJson(res, 409, { error: 'SALESPERSON_EXISTS', message: '業務姓名已存在。' });
       return;
     }
     const salesperson = {
@@ -259,12 +259,12 @@ async function handleApi(req, res, url) {
     db.salespeople = Array.isArray(db.salespeople) ? db.salespeople : [];
     const salesperson = db.salespeople.find(item => item.id === salespersonId);
     if (!salesperson) {
-      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '�䤣��~�ȤH���C' });
+      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '找不到業務人員。' });
       return;
     }
     const name = cleanString(body.name ?? salesperson.name);
     if (!name) {
-      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '�п�J�~�ȩm�W�C' });
+      sendJson(res, 400, { error: 'INVALID_SALESPERSON', message: '請輸入業務姓名。' });
       return;
     }
     salesperson.name = name;
@@ -285,7 +285,7 @@ async function handleApi(req, res, url) {
     db.salespeople = Array.isArray(db.salespeople) ? db.salespeople : [];
     const index = db.salespeople.findIndex(item => item.id === salespersonId);
     if (index === -1) {
-      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '�䤣��~�ȤH���C' });
+      sendJson(res, 404, { error: 'SALESPERSON_NOT_FOUND', message: '找不到業務人員。' });
       return;
     }
     const [salesperson] = db.salespeople.splice(index, 1);
@@ -311,11 +311,11 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const username = cleanString(body.username);
     if (!username || !body.password) {
-      sendJson(res, 400, { error: 'INVALID_USER', message: '�п�J�b���P�K�X�C' });
+      sendJson(res, 400, { error: 'INVALID_USER', message: '請輸入帳號和密碼。' });
       return;
     }
     if (db.users.some(user => user.username === username)) {
-      sendJson(res, 409, { error: 'USER_EXISTS', message: '�b���w�s�b�C' });
+      sendJson(res, 409, { error: 'USER_EXISTS', message: '帳號已存在。' });
       return;
     }
     const user = {
@@ -346,7 +346,7 @@ async function handleApi(req, res, url) {
     const db = await readDb();
     const user = db.users.find(item => item.id === userId);
     if (!user) {
-      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '�䤣��ϥΪ̡C' });
+      sendJson(res, 404, { error: 'USER_NOT_FOUND', message: '找不到使用者。' });
       return;
     }
     user.displayName = cleanString(body.displayName ?? user.displayName) || user.username;
@@ -371,7 +371,7 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  sendJson(res, 404, { error: 'NOT_FOUND', message: '�䤣�� API�C' });
+  sendJson(res, 404, { error: 'NOT_FOUND', message: '找不到 API。' });
 }
 
 async function serveStatic(req, res, url) {
@@ -644,7 +644,7 @@ async function requireAuth(req, res) {
   const session = sessionId ? sessions.get(sessionId) : null;
   if (!session || session.expiresAt < Date.now()) {
     if (sessionId) sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '�Х��n�J�C' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '請先登入。' });
     return null;
   }
   session.expiresAt = Date.now() + sessionTtlMs;
@@ -652,7 +652,7 @@ async function requireAuth(req, res) {
   const user = db.users.find(item => item.id === session.userId && item.active !== false);
   if (!user) {
     sessions.delete(sessionId);
-    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '�ϥΪ̤w���ΡC' });
+    sendJson(res, 401, { error: 'UNAUTHENTICATED', message: '使用者已停用。' });
     return null;
   }
   return { user };

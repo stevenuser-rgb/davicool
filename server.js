@@ -393,6 +393,12 @@ async function serveStatic(req, res, url) {
     res.end('Not found');
     return;
   }
+  if (path.basename(file) === 'index.html') {
+    const html = await fsp.readFile(file, 'utf8');
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html.replace('</body>', '<script src="/workspace-preview.js" defer></script></body>'));
+    return;
+  }
   res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' });
   fs.createReadStream(file).pipe(res);
 }

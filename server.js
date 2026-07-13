@@ -153,7 +153,7 @@ async function handleApi(req, res, url) {
       updatedBy: auth.user.username
     };
 
-    const sheetSync = queueCustomerProfileSync(customerKey, customerProfile, auth.user, body);
+    const sheetSync = await syncCustomerProfileToSheet(customerKey, customerProfile, auth.user, body);
     customerProfile.sheetSync = sheetSync;
     db.customerProfiles[customerKey] = customerProfile;
     await writeAudit(db, auth.user, 'UPDATE_CUSTOMER_PROFILE', {
@@ -189,7 +189,7 @@ async function handleApi(req, res, url) {
       updatedBy: auth.user.username
     };
 
-    const sheetSync = queueCustomerStateSync(customerKey, customerState, auth.user, body);
+    const sheetSync = await syncCustomerStateToSheet(customerKey, customerState, auth.user, body);
     customerState.sheetSync = sheetSync;
     db.customerStates[customerKey] = customerState;
     await writeAudit(db, auth.user, 'SAVE_CUSTOMER_STATE', {

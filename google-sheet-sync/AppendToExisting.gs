@@ -1,5 +1,41 @@
 // Web App API for Node backend. Paste at the bottom of the existing Apps Script project, then deploy a new Web App version.
 // Secret source: CONFIG.WRITEBACK_SECRET or Script Property WRITEBACK_SECRET.
+var WEBAPP_MAIN_SHEET = '\u5584\u6c34\u7528\u5730\u8b8a\u66f4\u5ba2\u6236\u56de\u5831\u7e3d\u8868';
+
+function getWebappMainSheetName_() {
+  try {
+    if (typeof CONFIG !== 'undefined' && CONFIG.SHEET_DATA) return CONFIG.SHEET_DATA;
+  } catch (error) {}
+  return WEBAPP_MAIN_SHEET;
+}
+
+function findWebappMainSheet_(ss) {
+  var configured = ss.getSheetByName(getWebappMainSheetName_());
+  if (configured) return configured;
+
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var sheet = sheets[i];
+    var name = String(sheet.getName() || '');
+    if (name.indexOf('總表') === -1 || sheet.getLastRow() < 1) continue;
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(value) {
+      return String(value || '').trim();
+    });
+    if (findColumnIndex(headers, ['工廠登記編號', '廠編', '編號']) !== -1) return sheet;
+  }
+
+  for (var j = 0; j < sheets.length; j++) {
+    var candidate = sheets[j];
+    if (candidate.getLastRow() < 1) continue;
+    var candidateHeaders = candidate.getRange(1, 1, 1, candidate.getLastColumn()).getValues()[0].map(function(value) {
+      return String(value || '').trim();
+    });
+    var hasId = findColumnIndex(candidateHeaders, ['工廠登記編號', '廠編', '編號']) !== -1;
+    var hasRegion = findColumnIndex(candidateHeaders, ['所屬區域', '區域']) !== -1;
+    if (hasId && hasRegion) return candidate;
+  }
+  return null;
+}
 var WEBAPP_BACKUP_SHEET = 'WebAppDbBackup';
 var WEBAPP_BACKUP_KEY = 'app-db-json';
 var WEBAPP_CHUNK_SIZE = 40000;
@@ -50,8 +86,8 @@ function writebackFactory_(payload) {
   var targetCompany = norm_(payload.sourceCompany || '');
   var regionSheet = findRegionSheet_(ss, targetRegion);
   var regionResult = regionSheet ? writeCustomerStateToSheet_(regionSheet, payload, targetRegion, targetCompany, true) : { ok: false, message: 'Region sheet not found' };
-  var mainSheet = ss.getSheetByName(CONFIG.SHEET_DATA);
-  if (!mainSheet) return { ok: false, message: 'Main sheet not found: ' + CONFIG.SHEET_DATA };
+  var mainSheet = findWebappMainSheet_(ss);
+  if (!mainSheet) return { ok: false, message: 'Main sheet not found. Check the total sheet headers.' };
   var mainResult = writeCustomerStateToSheet_(mainSheet, payload, targetRegion, targetCompany, false);
   if (!mainResult.ok) return mainResult;
   return {

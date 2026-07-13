@@ -46,25 +46,40 @@ function writebackFactory_(payload) {
   var factoryId = String(payload.factoryId || '').trim();
   if (!factoryId) return { ok: false, message: 'Missing factoryId' };
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName(CONFIG.SHEET_DATA);
-  if (!sheet) return { ok: false, message: 'Main sheet not found: ' + CONFIG.SHEET_DATA };
+  var targetRegion = norm_(payload.region || '');
+  var targetCompany = norm_(payload.sourceCompany || '');
+  var regionSheet = findRegionSheet_(ss, targetRegion);
+  var regionResult = regionSheet ? writeCustomerStateToSheet_(regionSheet, payload, targetRegion, targetCompany, true) : { ok: false, message: 'Region sheet not found' };
+  var mainSheet = ss.getSheetByName(CONFIG.SHEET_DATA);
+  if (!mainSheet) return { ok: false, message: 'Main sheet not found: ' + CONFIG.SHEET_DATA };
+  var mainResult = writeCustomerStateToSheet_(mainSheet, payload, targetRegion, targetCompany, false);
+  if (!mainResult.ok) return mainResult;
+  return {
+    ok: true,
+    message: 'Google Sheet synced',
+    regionSheet: regionSheet ? regionSheet.getName() : '',
+    regionSheetOk: !!regionSheet,
+    regionSheetMessage: regionResult.message || '',
+    row: mainResult.row
+  };
+}
+
+function writeCustomerStateToSheet_(sheet, payload, targetRegion, targetCompany, isRegionSheet) {
   var data = sheet.getDataRange().getValues();
-  if (data.length < 2) return { ok: false, message: 'Main sheet has no data' };
+  if (data.length < 2) return { ok: false, message: 'Sheet has no data: ' + sheet.getName() };
   var headers = data[0].map(function(value) { return String(value || '').trim(); });
   var idIdx = findColumnIndex(headers, ['\u5de5\u5ee0\u767b\u8a18\u7de8\u865f', '\u5ee0\u7de8', '\u7de8\u865f']);
   var regionIdx = findColumnIndex(headers, ['\u6240\u5c6c\u5340\u57df', '\u5340\u57df']);
   var companyIdx = findColumnIndex(headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8']);
-  if (idIdx === -1) return { ok: false, message: 'Factory id column not found' };
-  var target = norm_(factoryId);
-  var targetRegion = norm_(payload.region || '');
-  var targetCompany = norm_(payload.sourceCompany || '');
+  if (idIdx === -1) return { ok: false, message: 'Factory id column not found in ' + sheet.getName() };
+  var target = norm_(payload.factoryId || '');
   var matchRows = [];
   for (var i = 1; i < data.length; i++) {
     if (norm_(data[i][idIdx]) !== target) continue;
     matchRows.push(i + 1);
   }
   var row = resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyIdx, targetRegion, targetCompany);
-  if (!row) return { ok: false, message: 'Factory row not found: ' + factoryId };
+  if (!row) return { ok: false, message: 'Factory row not found in ' + sheet.getName() + ': ' + payload.factoryId };
   setIfPresent_(sheet, row, headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8'], payload, 'company');
   setIfPresent_(sheet, row, headers, ['\u5de5\u5ee0\u5730\u5740', '\u5730\u5740', '\u5ee0\u5740'], payload, 'address');
   setIfPresent_(sheet, row, headers, ['\u8ca0\u8cac\u4eba\u59d3\u540d', '\u8ca0\u8cac\u4eba', '\u806f\u7d61\u4eba'], payload, 'owner');
@@ -78,7 +93,21 @@ function writebackFactory_(payload) {
   setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u6642\u9593', payload.updatedAt || new Date().toISOString());
   removeVisitLogDropdown_(sheet, headers);
   if (payload.note) appendLog_(sheet, headers, row, payload);
-  return { ok: true, message: 'Google Sheet synced', row: row };
+  return { ok: true, message: (isRegionSheet ? 'Region sheet synced' : 'Main sheet synced'), row: row };
+}
+
+function findRegionSheet_(ss, targetRegion) {
+  if (!targetRegion) return null;
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (norm_(name) === targetRegion) return sheets[i];
+  }
+  for (var j = 0; j < sheets.length; j++) {
+    var sheetName = norm_(sheets[j].getName());
+    if (sheetName.indexOf(targetRegion) !== -1 || targetRegion.indexOf(sheetName) !== -1) return sheets[j];
+  }
+  return null;
 }
 
 function resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyIdx, targetRegion, targetCompany) {

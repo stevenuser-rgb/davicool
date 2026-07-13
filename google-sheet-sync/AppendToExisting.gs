@@ -1,6 +1,11 @@
 // Web App API for Node backend. Paste at the bottom of the existing Apps Script project, then deploy a new Web App version.
 // Secret source: CONFIG.WRITEBACK_SECRET or Script Property WRITEBACK_SECRET.
 var WEBAPP_MAIN_SHEET = '\u5584\u6c34\u7528\u5730\u8b8a\u66f4\u5ba2\u6236\u56de\u5831\u7e3d\u8868';
+var WEBAPP_SPREADSHEET_ID = '185NZwvJFPTsgi0H99mpl8KsDg_cMxxRbIwGu0N2Agko';
+
+function getWritebackSpreadsheet_() {
+  return SpreadsheetApp.openById(WEBAPP_SPREADSHEET_ID);
+}
 
 function getWebappMainSheetName_() {
   try {
@@ -55,7 +60,7 @@ function doPost(e) {
 
 function saveDbBackup_(payload) {
   if (!payload.db || typeof payload.db !== 'object') return { ok: false, message: 'Missing db backup payload' };
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getWritebackSpreadsheet_();
   var sheet = ss.getSheetByName(WEBAPP_BACKUP_SHEET) || ss.insertSheet(WEBAPP_BACKUP_SHEET);
   var json = JSON.stringify(payload.db);
   var rows = [];
@@ -70,7 +75,7 @@ function saveDbBackup_(payload) {
 }
 
 function loadDbBackup_() {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(WEBAPP_BACKUP_SHEET);
+  var sheet = getWritebackSpreadsheet_().getSheetByName(WEBAPP_BACKUP_SHEET);
   if (!sheet) return { ok: true, exists: false, db: null };
   var values = sheet.getDataRange().getValues();
   var rows = values.slice(1).filter(function(row) { return row[0] === WEBAPP_BACKUP_KEY; }).sort(function(a, b) { return Number(a[1]) - Number(b[1]); });
@@ -81,7 +86,7 @@ function loadDbBackup_() {
 function writebackFactory_(payload) {
   var factoryId = String(payload.factoryId || '').trim();
   if (!factoryId) return { ok: false, message: 'Missing factoryId' };
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = getWritebackSpreadsheet_();
   var targetRegion = norm_(payload.region || '');
   var targetCompany = norm_(payload.sourceCompany || '');
   var regionSheet = findRegionSheet_(ss, targetRegion);

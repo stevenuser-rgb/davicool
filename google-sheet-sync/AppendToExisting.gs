@@ -71,6 +71,7 @@ function writebackFactory_(payload) {
   setIfPresent_(sheet, row, headers, ['\u96fb\u8a71', '\u806f\u7d61\u96fb\u8a71', '\u624b\u6a5f'], payload, 'phone');
   setIfPresent_(sheet, row, headers, ['\u5ba2\u6236\u5206\u7d1a', '\u5206\u7d1a', '\u7b49\u7d1a'], payload, 'grade');
   setHeaderValue_(sheet, headers, row, '\u958b\u767c\u696d\u52d9', payload.salesperson || '');
+  setHeaderValue_(sheet, headers, row, '\u4ee3\u8fa6\u696d\u8005', payload.agencyType || '');
   setHeaderValue_(sheet, headers, row, '\u8ffd\u8e64\u72c0\u614b', statusLabel_(payload.status || ''));
   if (has_(payload, 'nextDate')) setHeaderValue_(sheet, headers, row, '\u4e0b\u6b21\u8ffd\u8e64\u65e5', payload.nextDate || '');
   setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u8005', payload.updatedBy || '');

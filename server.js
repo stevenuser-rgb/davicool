@@ -184,6 +184,7 @@ async function handleApi(req, res, url) {
       nextDate: cleanString(body.nextDate ?? current.nextDate ?? ''),
       note: cleanString(body.note ?? current.note ?? ''),
       salesperson: cleanString(body.salesperson ?? current.salesperson ?? ''),
+      agencyType: cleanString(body.agencyType ?? current.agencyType ?? ''),
       updatedAt: new Date().toISOString(),
       updatedBy: auth.user.username
     };
@@ -197,6 +198,7 @@ async function handleApi(req, res, url) {
       status: customerState.status,
       grade: customerState.grade,
       salesperson: customerState.salesperson,
+      agencyType: customerState.agencyType,
       sheetSync
     }, true);
     await writeDbAndVerify(
@@ -428,6 +430,7 @@ async function syncCustomerStateToSheet(customerKey, customerState, user, contex
         nextDate: customerState.nextDate,
         note: customerState.note,
         salesperson: customerState.salesperson,
+        agencyType: customerState.agencyType,
         updatedAt: customerState.updatedAt,
         updatedBy: user.username
       })

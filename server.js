@@ -442,12 +442,16 @@ async function syncCustomerStateToSheet(customerKey, customerState, user, contex
     } catch {
       payload = { ok: response.ok, raw: text.slice(0, 300) };
     }
+    const regionSynced = payload.regionSheetOk === true;
     return {
       enabled: true,
-      ok: response.ok && payload.ok !== false,
+      ok: response.ok && payload.ok !== false && regionSynced,
       status: response.status,
       message: payload.message || (response.ok ? 'Google Sheet �w�P�B�C' : 'Google Sheet �P�B���ѡC'),
-      row: payload.row || null
+      row: payload.row || null,
+      regionSheet: payload.regionSheet || '',
+      regionSheetOk: regionSynced,
+      regionSheetMessage: payload.regionSheetMessage || ''
     };
   } catch (error) {
     return { enabled: true, ok: false, message: error.message };
@@ -496,12 +500,16 @@ async function syncCustomerProfileToSheet(customerKey, customerProfile, user, co
     } catch {
       payload = { ok: response.ok, raw: text.slice(0, 300) };
     }
+    const regionSynced = payload.regionSheetOk === true;
     return {
       enabled: true,
-      ok: response.ok && payload.ok !== false,
+      ok: response.ok && payload.ok !== false && regionSynced,
       status: response.status,
       message: payload.message || (response.ok ? 'Google Sheet �w�P�B�C' : 'Google Sheet �P�B���ѡC'),
-      row: payload.row || null
+      row: payload.row || null,
+      regionSheet: payload.regionSheet || '',
+      regionSheetOk: regionSynced,
+      regionSheetMessage: payload.regionSheetMessage || ''
     };
   } catch (error) {
     return { enabled: true, ok: false, message: error.message };

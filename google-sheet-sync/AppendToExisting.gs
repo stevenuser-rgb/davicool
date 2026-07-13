@@ -21,7 +21,7 @@ function findWebappMainSheet_(ss) {
     var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(value) {
       return String(value || '').trim();
     });
-    if (findColumnIndex(headers, ['工廠登記編號', '廠編', '編號']) !== -1) return sheet;
+    if (writebackFindColumnIndex_(headers, ['工廠登記編號', '廠編', '編號']) !== -1) return sheet;
   }
 
   for (var j = 0; j < sheets.length; j++) {
@@ -30,8 +30,8 @@ function findWebappMainSheet_(ss) {
     var candidateHeaders = candidate.getRange(1, 1, 1, candidate.getLastColumn()).getValues()[0].map(function(value) {
       return String(value || '').trim();
     });
-    var hasId = findColumnIndex(candidateHeaders, ['工廠登記編號', '廠編', '編號']) !== -1;
-    var hasRegion = findColumnIndex(candidateHeaders, ['所屬區域', '區域']) !== -1;
+    var hasId = writebackFindColumnIndex_(candidateHeaders, ['工廠登記編號', '廠編', '編號']) !== -1;
+    var hasRegion = writebackFindColumnIndex_(candidateHeaders, ['所屬區域', '區域']) !== -1;
     if (hasId && hasRegion) return candidate;
   }
   return null;
@@ -104,9 +104,9 @@ function writeCustomerStateToSheet_(sheet, payload, targetRegion, targetCompany,
   var data = sheet.getDataRange().getValues();
   if (data.length < 2) return { ok: false, message: 'Sheet has no data: ' + sheet.getName() };
   var headers = data[0].map(function(value) { return String(value || '').trim(); });
-  var idIdx = findColumnIndex(headers, ['\u5de5\u5ee0\u767b\u8a18\u7de8\u865f', '\u5ee0\u7de8', '\u7de8\u865f']);
-  var regionIdx = findColumnIndex(headers, ['\u6240\u5c6c\u5340\u57df', '\u5340\u57df']);
-  var companyIdx = findColumnIndex(headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8']);
+  var idIdx = writebackFindColumnIndex_(headers, ['\u5de5\u5ee0\u767b\u8a18\u7de8\u865f', '\u5ee0\u7de8', '\u7de8\u865f']);
+  var regionIdx = writebackFindColumnIndex_(headers, ['\u6240\u5c6c\u5340\u57df', '\u5340\u57df']);
+  var companyIdx = writebackFindColumnIndex_(headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8']);
   if (idIdx === -1) return { ok: false, message: 'Factory id column not found in ' + sheet.getName() };
   var target = norm_(payload.factoryId || '');
   var matchRows = [];
@@ -165,7 +165,7 @@ function resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyId
 }
 
 function appendLog_(sheet, headers, row, payload) {
-  var col = findColumnIndex(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
+  var col = writebackFindColumnIndex_(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
   if (col === -1) return;
   var today = Utilities.formatDate(new Date(), 'GMT+8', 'MM/dd');
   var log = '[' + today + '] ' + payload.note + (payload.salesperson ? ' (' + payload.salesperson + ')' : '');
@@ -175,7 +175,7 @@ function appendLog_(sheet, headers, row, payload) {
 }
 
 function removeVisitLogDropdown_(sheet, headers) {
-  var col = findColumnIndex(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
+  var col = writebackFindColumnIndex_(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
   if (col === -1) return;
   var lastRow = sheet.getLastRow();
   if (lastRow < 2) return;
@@ -184,7 +184,7 @@ function removeVisitLogDropdown_(sheet, headers) {
 
 function setIfPresent_(sheet, row, headers, names, payload, key) {
   if (!has_(payload, key)) return;
-  var idx = findColumnIndex(headers, names);
+  var idx = writebackFindColumnIndex_(headers, names);
   if (idx !== -1) sheet.getRange(row, idx + 1).setValue(payload[key] || '');
 }
 
@@ -201,6 +201,14 @@ function setHeaderValue_(sheet, headers, row, name, value) {
 function statusLabel_(status) {
   var labels = { todo: '\u5f85\u8655\u7406', follow: '\u8ffd\u8e64\u4e2d', visited: '\u5df2\u62dc\u8a2a', closed: '\u5df2\u7d50\u6848' };
   return labels[status] || '';
+}
+
+function writebackFindColumnIndex_(headers, possibleNames) {
+  for (var i = 0; i < possibleNames.length; i++) {
+    var index = headers.indexOf(possibleNames[i]);
+    if (index !== -1) return index;
+  }
+  return -1;
 }
 
 function getWritebackSecret_() {

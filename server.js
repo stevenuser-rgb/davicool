@@ -23,6 +23,9 @@ const sheetWriteSecret = cleanEnv(process.env.GOOGLE_SHEET_WRITE_SECRET);
 const remoteDbBackupEnabled = Boolean(sheetWriteUrl && sheetWriteSecret);
 const customerSheetId = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_ID);
 const customerSheetGid = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_GID);
+const customerSheetUrl = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_API_URL);
+const customerSheetSecret = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_API_SECRET);
+const legacySheetConnection = { url: sheetWriteUrl, secret: sheetWriteSecret };
 const legacySheetTarget = { spreadsheetId: new URL(sheetCsvUrl).pathname.split('/')[3], gid: null };
 
 async function readSheetHistory() {
@@ -54,10 +57,24 @@ function recordSheetActivity(target, field) {
 
 function getCustomerSheetTarget() {
   if (!customerSheetId && !customerSheetGid) return null;
-  if (!/^[\w-]+$/.test(customerSheetId) || !/^\d+$/.test(customerSheetGid) || !remoteDbBackupEnabled) {
+  if (!/^[\w-]+$/.test(customerSheetId) || !/^\d+$/.test(customerSheetGid)) {
     throw httpError(503, 'SHEET_CONFIG_INVALID', 'Google Sheet customer source configuration is incomplete.');
   }
   return { spreadsheetId: customerSheetId, gid: customerSheetGid };
+}
+
+function getCustomerSheetConnection(target) {
+  if (!target) return legacySheetConnection;
+  if (customerSheetUrl || customerSheetSecret) {
+    if (!/^https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec$/.test(customerSheetUrl) || customerSheetSecret.length < 32) {
+      throw httpError(503, 'SHEET_CONFIG_INVALID', 'Google Sheet customer endpoint or secret is invalid.');
+    }
+    return { url: customerSheetUrl, secret: customerSheetSecret };
+  }
+  if (!remoteDbBackupEnabled) {
+    throw httpError(503, 'SHEET_CONFIG_INVALID', 'Google Sheet customer endpoint is not configured.');
+  }
+  return legacySheetConnection;
 }
 
 const types = {
@@ -168,7 +185,8 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === 'GET' && url.pathname === '/api/sheet-sync-status') {
-    sendJson(res, 200, { enabled: Boolean(sheetWriteUrl), hasSecret: Boolean(sheetWriteSecret) });
+    const connection = getCustomerSheetConnection(getCustomerSheetTarget());
+    sendJson(res, 200, { enabled: Boolean(connection.url), hasSecret: Boolean(connection.secret) });
     return;
   }
 
@@ -489,9 +507,10 @@ async function sendFactoriesCsv(res) {
 }
 
 async function readCustomerSheet(target) {
-  if (customerSheetWrites > 0) return postSheetAction('readCustomerSheet', { target });
+  const connection = getCustomerSheetConnection(target);
+  if (customerSheetWrites > 0) return postSheetAction('readCustomerSheet', { target }, connection);
   if (customerSheetRead) return customerSheetRead;
-  const request = postSheetAction('readCustomerSheet', { target });
+  const request = postSheetAction('readCustomerSheet', { target }, connection);
   customerSheetRead = request;
   try {
     return await request;
@@ -517,21 +536,22 @@ async function syncCustomerStateToSheet(customerKey, customerState, user, contex
 }
 
 async function syncCustomerToSheet(customer) {
-  if (!sheetWriteUrl) {
+  if (!sheetWriteUrl && !customerSheetId && !customerSheetGid) {
     return { enabled: false, ok: false, message: 'Google Sheet �g�^�|���]�w�C' };
   }
 
   try {
     const target = getCustomerSheetTarget();
+    const connection = getCustomerSheetConnection(target);
     customerSheetRead = null;
     customerSheetWrites++;
     const { response, text } = await (async () => {
-      const response = await fetch(sheetWriteUrl, {
+      const response = await fetch(connection.url, {
         method: 'POST',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
         body: JSON.stringify(target
-          ? { secret: sheetWriteSecret, action: 'writeCustomerSheet', target, customer }
-          : { secret: sheetWriteSecret, ...customer })
+          ? { secret: connection.secret, action: 'writeCustomerSheet', target, customer }
+          : { secret: connection.secret, ...customer })
       });
       return { response, text: await response.text() };
     })().finally(() => { customerSheetWrites--; });
@@ -687,12 +707,12 @@ async function saveRemoteDbBackup(db) {
   return { enabled: true, ok: true, savedAt: payload.savedAt || null };
 }
 
-async function postSheetAction(action, payload) {
-  const response = await fetch(sheetWriteUrl, {
+async function postSheetAction(action, payload, connection = legacySheetConnection) {
+  const response = await fetch(connection.url, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
-      secret: sheetWriteSecret,
+      secret: connection.secret,
       action,
       ...payload
     })

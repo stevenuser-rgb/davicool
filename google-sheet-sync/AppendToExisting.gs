@@ -50,6 +50,17 @@ function doPost(e) {
     var payload = JSON.parse(e.postData && e.postData.contents ? e.postData.contents : '{}');
     var secret = getWritebackSecret_();
     if (secret && payload.secret !== secret) return writebackJson_({ ok: false, message: 'Invalid secret' });
+    if (payload.action === 'previewCustomerImport' || payload.action === 'commitCustomerImport') {
+      if (!secret || typeof customerImportDispatch_ !== 'function') throw new Error('尚未啟用名單匯入。');
+      var properties = PropertiesService.getScriptProperties();
+      var importId = properties.getProperty('CUSTOMER_IMPORT_SPREADSHEET_ID');
+      var importGid = properties.getProperty('CUSTOMER_IMPORT_GID');
+      if (!importId || !importGid || !payload.target ||
+          payload.target.spreadsheetId !== importId || String(payload.target.gid) !== importGid) {
+        throw new Error('此資料表未允許名單匯入。');
+      }
+      return writebackJson_(customerImportDispatch_(payload.action, resolveCustomerSheet_(payload.target), payload));
+    }
     if (payload.action === 'saveDbBackup') return writebackJson_(saveDbBackup_(payload));
     if (payload.action === 'loadDbBackup') return writebackJson_(loadDbBackup_());
     if (payload.action === 'readCustomerSheet' || payload.action === 'writeCustomerSheet') {

@@ -1,0 +1,36 @@
+.list-heading-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.import-dialog { padding: 0; color: var(--ink); width: min(860px, calc(100% - 24px)); max-height: calc(100dvh - 32px); margin: auto; }
+.import-dialog::backdrop { background: rgba(18, 27, 32, .42); }
+.import-dialog .modal-body { grid-template-columns: minmax(0, 1fr); }
+.import-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; }
+.import-form input[type="file"] { min-width: 0; }
+.import-actions, .import-preview-head { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.import-actions { grid-column: 1 / -1; }
+.import-preview-head { justify-content: space-between; }
+.import-preview-head p { margin: 0; font-size: 14px; overflow-wrap: anywhere; }
+.import-message { margin: 0; color: var(--teal2); overflow-wrap: anywhere; }
+.import-message:empty { display: none; }
+.import-message[data-error="true"] { color: #8e2f40; }
+.import-dialog button:disabled { opacity: .56; cursor: default; }
+.import-counts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid var(--line); padding: 10px 0; }
+.import-counts div { padding: 0 12px; font-size: 13px; }
+.import-counts div + div { border-inline-start: 1px solid var(--line); }
+.import-counts dt { color: var(--muted); }
+.import-counts dd { margin: 4px 0 0; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.import-table-wrap { overflow: auto; max-height: 36vh; }
+.import-table { min-width: 535px; }
+.import-table :is(th, td) { padding: 8px 10px; font-size: 13px; overflow-wrap: anywhere; }
+.import-table td:nth-child(4) { white-space: nowrap; }
+.import-table tr[data-result="add"] td:nth-child(4) { color: var(--green); font-weight: 700; }
+.import-table tr[data-result="review"] td:nth-child(4) { color: #8a4a04; }
+.import-table tr[data-result="invalid"] td:nth-child(4) { color: #8e2f40; }
+#customerImportHistory { padding-top: 10px; border-top: 1px solid var(--line); }
+#customerImportHistory summary { cursor: pointer; font-weight: 700; font-size: 14px; }
+#customerImportReceipts { margin-top: 10px; }
+.import-receipts { margin: 0; padding-inline-start: 18px; font-size: 13px; overflow-wrap: anywhere; }
+.import-receipts li + li { margin-top: 6px; }
+@media (max-width: 560px) {
+  .import-form { grid-template-columns: minmax(0, 1fr); }
+  .import-counts div { padding-inline: 6px; }
+  .list-heading-actions { gap: 4px; }
+}

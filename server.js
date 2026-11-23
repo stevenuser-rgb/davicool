@@ -3,6 +3,7 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
+const { createCustomerImporter, maxBytes: maxImportBytes } = require('./customer-import');
 
 const appRoot = __dirname;
 const publicRoot = appRoot;
@@ -27,6 +28,17 @@ const customerSheetUrl = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_API_URL);
 const customerSheetSecret = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_API_SECRET);
 const legacySheetConnection = { url: sheetWriteUrl, secret: sheetWriteSecret };
 const legacySheetTarget = { spreadsheetId: new URL(sheetCsvUrl).pathname.split('/')[3], gid: null };
+const customerImportEnabled = process.env.CUSTOMER_IMPORT_ENABLED === '1' &&
+  Boolean(customerSheetId && customerSheetGid && customerSheetUrl && customerSheetSecret);
+const customerImporter = createCustomerImporter({ dataDir, call: async (action, payload) => {
+  const target = getCustomerSheetTarget();
+  const connection = getCustomerSheetConnection(target);
+  try {
+    return await postSheetAction(action, { target, ...payload }, connection, AbortSignal.timeout(45000));
+  } catch {
+    throw httpError(502, 'CUSTOMER_IMPORT_UNAVAILABLE', '無法確認匯入端點回應；若正在確認匯入，請重試同一批次。');
+  }
+} });
 
 async function readSheetHistory() {
   try {
@@ -153,6 +165,39 @@ async function handleApi(req, res, url) {
 
   const auth = await requireAuth(req, res);
   if (!auth) return;
+
+  if (url.pathname.startsWith('/api/customer-import/')) {
+    if (auth.user.role !== 'admin') {
+      throw httpError(403, 'FORBIDDEN', '需要管理員權限。');
+    }
+    const operation = url.pathname.slice('/api/customer-import/'.length);
+    if (req.method === 'GET' && operation === 'status') {
+      sendJson(res, 200, { enabled: customerImportEnabled });
+      return;
+    }
+    if (!customerImportEnabled) {
+      throw httpError(503, 'CUSTOMER_IMPORT_DISABLED', '尚未啟用名單匯入。');
+    }
+    if (req.method === 'GET' && operation === 'history') {
+      sendJson(res, 200, { receipts: await customerImporter.history() });
+      return;
+    }
+    if (req.method === 'POST' && ['preview', 'commit'].includes(operation)) {
+      if (req.headers['content-type']?.split(';')[0].trim() !== 'application/json') {
+        throw httpError(415, 'CUSTOMER_IMPORT_FORMAT', '匯入請求格式不正確。');
+      }
+      const body = await readJson(req, Math.ceil(maxImportBytes / 3) * 4 + 4096);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        throw httpError(400, 'CUSTOMER_IMPORT_FORMAT', '匯入請求格式不正確。');
+      }
+      const result = operation === 'preview'
+        ? await customerImporter.preview(body, auth.user)
+        : await customerImporter.commit(body.batchId, auth.user);
+      sendJson(res, 200, result);
+      return;
+    }
+    throw httpError(404, 'NOT_FOUND', '找不到匯入功能。');
+  }
 
   if (req.method === 'GET' && url.pathname === '/api/customer-sheet-history') {
     if (auth.user.role !== 'admin') {
@@ -707,9 +752,10 @@ async function saveRemoteDbBackup(db) {
   return { enabled: true, ok: true, savedAt: payload.savedAt || null };
 }
 
-async function postSheetAction(action, payload, connection = legacySheetConnection) {
+async function postSheetAction(action, payload, connection = legacySheetConnection, signal) {
   const response = await fetch(connection.url, {
     method: 'POST',
+    signal,
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
     body: JSON.stringify({
       secret: connection.secret,
@@ -760,11 +806,20 @@ async function requireAuth(req, res) {
   return { user };
 }
 
-async function readJson(req) {
+async function readJson(req, limit = Infinity) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let bytes = 0;
+  for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+    bytes += chunk.length;
+    if (bytes > limit) {
+      req.resume();
+      throw httpError(413, 'BODY_TOO_LARGE', '檔案不可超過 512 KB。');
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, '');
-  return raw ? JSON.parse(raw) : {};
+  try { return raw ? JSON.parse(raw) : {}; }
+  catch { throw httpError(400, 'INVALID_JSON', '請求格式不正確。'); }
 }
 
 function sendJson(res, status, payload) {

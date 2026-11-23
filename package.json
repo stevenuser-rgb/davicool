@@ -4,9 +4,19 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/customer-import.test.js",
+    "demo:import": "node test/start-import-demo.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "csv-parse": "7.0.3",
+    "read-excel-file": "9.3.20",
+    "yauzl": "3.4.0"
+  },
+  "devDependencies": {
+    "fflate": "0.8.3"
   }
 }

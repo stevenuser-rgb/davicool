@@ -26,6 +26,7 @@
         <details class="command-menu">
           <summary class="icon-button" title="管理與工具" aria-label="管理與工具"><i data-lucide="ellipsis"></i></summary>
           <div class="command-menu-items">
+            <button class="ghost-button hidden" id="importCustomersBtn" type="button"><i data-lucide="file-up"></i>匯入特登名單</button>
             <button class="ghost-button" id="usersBtn"><i data-lucide="users"></i>使用者管理</button>
             <button class="ghost-button" id="salespeopleBtn"><i data-lucide="briefcase-business"></i>業務人員</button>
             <button class="ghost-button" id="logsBtn"><i data-lucide="list-checks"></i>操作記錄</button>
@@ -62,7 +63,7 @@
       <section class="summary-grid" id="summaryGrid" aria-label="客戶概況"></section>
       <div class="list-layout">
         <section class="list-panel" aria-labelledby="customerListTitle">
-          <div class="panel-head"><h2 id="customerListTitle">客戶名單</h2><div class="list-heading-actions"><span class="count-pill" id="resultCount" aria-live="polite">0 筆</span><button class="ghost-button hidden" id="importCustomersBtn" type="button"><i data-lucide="file-up"></i>匯入特登名單</button></div></div>
+          <div class="panel-head"><h2 id="customerListTitle">客戶名單</h2><span class="count-pill" id="resultCount" aria-live="polite">0 筆</span></div>
           <div class="error" id="errorBox" role="alert"></div>
           <div class="loading" id="loadingBox" role="status">正在載入客戶名單…</div>
           <div class="table-wrap customer-list-scroll">

@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   const byId = id => document.getElementById(id);
   const entry = byId('importCustomersBtn');
+  const menu = entry.closest('details');
   const dialog = byId('customerImportDialog');
   const form = byId('customerImportForm');
   const select = byId('importRegion');
@@ -40,6 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
     history.open = false;
     updateRegionField();
     resetPreview();
+    menu.open = false;
     dialog.showModal();
     refreshIcons();
   });
@@ -48,7 +50,7 @@ document.addEventListener('DOMContentLoaded', () => {
   dialog.addEventListener('close', () => {
     resetPreview();
     form.reset();
-    if (!entry.classList.contains('hidden')) entry.focus();
+    if (!entry.classList.contains('hidden')) menu.querySelector('summary').focus();
   });
   select.addEventListener('change', updateRegionField);
   form.addEventListener('input', resetPreview);

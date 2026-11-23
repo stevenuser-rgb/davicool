@@ -52,6 +52,18 @@ function doPost(e) {
     if (secret && payload.secret !== secret) return writebackJson_({ ok: false, message: 'Invalid secret' });
     if (payload.action === 'saveDbBackup') return writebackJson_(saveDbBackup_(payload));
     if (payload.action === 'loadDbBackup') return writebackJson_(loadDbBackup_());
+    if (payload.action === 'readCustomerSheet' || payload.action === 'writeCustomerSheet') {
+      if (!secret) return writebackJson_({ ok: false, message: 'Writeback secret is required.' });
+      var target = resolveCustomerSheet_(payload.target);
+      if (payload.action === 'readCustomerSheet') {
+        var values = target.sheet.getDataRange().getDisplayValues();
+        var csv = values.map(function(row) {
+          return row.map(function(cell) { return '"' + cell.replace(/"/g, '""') + '"'; }).join(',');
+        }).join('\r\n');
+        return writebackJson_({ ok: true, csv: csv });
+      }
+      return writebackJson_(writebackFactory_(payload.customer || {}, target));
+    }
     return writebackJson_(writebackFactory_(payload));
   } catch (error) {
     return writebackJson_({ ok: false, message: error.message });
@@ -83,36 +95,73 @@ function loadDbBackup_() {
   return { ok: true, exists: true, updatedAt: rows[0][3] || '', db: JSON.parse(rows.map(function(row) { return String(row[2] || ''); }).join('')) };
 }
 
-function writebackFactory_(payload) {
+function resolveCustomerSheet_(target) {
+  if (!target || !/^[\w-]+$/.test(target.spreadsheetId || '') || !/^\d+$/.test(target.gid || '')) {
+    throw new Error('Invalid customer spreadsheet or tab ID.');
+  }
+  var ss = SpreadsheetApp.openById(target.spreadsheetId);
+  var sheet = ss.getSheets().find(function(candidate) { return candidate.getSheetId() === Number(target.gid); });
+  if (!sheet) throw new Error('Configured customer tab was not found.');
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+  if (headers.indexOf('\u5de5\u5ee0\u767b\u8a18\u7de8\u865f') === -1 ||
+      headers.indexOf('\u516c\u53f8\u540d\u7a31') === -1 ||
+      headers.indexOf('\u6240\u5c6c\u5340\u57df') === -1 ||
+      headers.indexOf('\u62dc\u8a2a\u56de\u5831') === -1) {
+    throw new Error('Configured customer tab is missing required headers.');
+  }
+  return { spreadsheet: ss, sheet: sheet, headers: headers };
+}
+
+function writebackFactory_(payload, target) {
   var factoryId = String(payload.factoryId || '').trim();
   if (!factoryId) return { ok: false, message: 'Missing factoryId' };
-  var ss = getWritebackSpreadsheet_();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return { ok: false, message: 'Google Sheet is busy. Please retry.' };
+  try {
+    return writebackFactoryLocked_(payload, target);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function writebackFactoryLocked_(payload, target) {
+  var ss = target ? target.spreadsheet : getWritebackSpreadsheet_();
   var targetRegion = norm_(payload.region || '');
   var targetCompany = norm_(payload.sourceCompany || '');
   var regionSheet = findRegionSheet_(ss, targetRegion);
-  var regionResult = regionSheet ? writeCustomerStateToSheet_(regionSheet, payload, targetRegion, targetCompany, true) : { ok: false, message: 'Region sheet not found' };
-  var mainSheet = findWebappMainSheet_(ss);
+  var mainSheet = target ? target.sheet : findWebappMainSheet_(ss);
   if (!mainSheet) return { ok: false, message: 'Main sheet not found. Check the total sheet headers.' };
-  var mainResult = writeCustomerStateToSheet_(mainSheet, payload, targetRegion, targetCompany, false);
+  var mainResult = prepareCustomerUpdate_(mainSheet, payload, targetRegion, targetCompany, target && target.headers);
   if (!mainResult.ok) return mainResult;
+  var regionResult = regionSheet && regionSheet.getSheetId() !== mainSheet.getSheetId()
+    ? prepareCustomerUpdate_(regionSheet, payload, targetRegion, targetCompany)
+    : { ok: false, message: 'Region sheet not found' };
+  try {
+    applyCustomerUpdate_(mainSheet, mainResult);
+    if (regionResult.ok) applyCustomerUpdate_(regionSheet, regionResult);
+  } finally {
+    SpreadsheetApp.flush();
+  }
   return {
     ok: true,
     message: 'Google Sheet synced',
     regionSheet: regionSheet ? regionSheet.getName() : '',
-    regionSheetOk: !!regionSheet,
-    regionSheetMessage: regionResult.message || '',
+    regionSheetOk: regionResult.ok,
+    regionSheetMessage: regionResult.ok ? 'Region sheet synced' : regionResult.message,
     row: mainResult.row
   };
 }
 
-function writeCustomerStateToSheet_(sheet, payload, targetRegion, targetCompany, isRegionSheet) {
-  var data = sheet.getDataRange().getValues();
-  if (data.length < 2) return { ok: false, message: 'Sheet has no data: ' + sheet.getName() };
-  var headers = data[0].map(function(value) { return String(value || '').trim(); });
+function prepareCustomerUpdate_(sheet, payload, targetRegion, targetCompany, knownHeaders) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return { ok: false, message: 'Sheet has no data: ' + sheet.getName() };
+  var sourceHeaders = knownHeaders || sheet.getRange(1, 1, 1, sheet.getLastColumn()).getDisplayValues()[0];
+  var headers = sourceHeaders.map(function(value) { return value.trim(); });
   var idIdx = writebackFindColumnIndex_(headers, ['\u5de5\u5ee0\u767b\u8a18\u7de8\u865f', '\u5ee0\u7de8', '\u7de8\u865f']);
   var regionIdx = writebackFindColumnIndex_(headers, ['\u6240\u5c6c\u5340\u57df', '\u5340\u57df']);
   var companyIdx = writebackFindColumnIndex_(headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8']);
   if (idIdx === -1) return { ok: false, message: 'Factory id column not found in ' + sheet.getName() };
+  var data = sheet.getRange(1, 1, lastRow, Math.max(idIdx, regionIdx, companyIdx) + 1).getValues();
   var target = norm_(payload.factoryId || '');
   var matchRows = [];
   for (var i = 1; i < data.length; i++) {
@@ -121,20 +170,26 @@ function writeCustomerStateToSheet_(sheet, payload, targetRegion, targetCompany,
   }
   var row = resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyIdx, targetRegion, targetCompany);
   if (!row) return { ok: false, message: 'Factory row not found in ' + sheet.getName() + ': ' + payload.factoryId };
-  setIfPresent_(sheet, row, headers, ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8'], payload, 'company');
-  setIfPresent_(sheet, row, headers, ['\u5de5\u5ee0\u5730\u5740', '\u5730\u5740', '\u5ee0\u5740'], payload, 'address');
-  setIfPresent_(sheet, row, headers, ['\u8ca0\u8cac\u4eba\u59d3\u540d', '\u8ca0\u8cac\u4eba', '\u806f\u7d61\u4eba'], payload, 'owner');
-  setIfPresent_(sheet, row, headers, ['\u96fb\u8a71', '\u806f\u7d61\u96fb\u8a71', '\u624b\u6a5f'], payload, 'phone');
-  setIfPresent_(sheet, row, headers, ['\u5ba2\u6236\u5206\u7d1a', '\u5206\u7d1a', '\u7b49\u7d1a'], payload, 'grade');
-  setHeaderValue_(sheet, headers, row, '\u958b\u767c\u696d\u52d9', payload.salesperson || '');
-  setHeaderValue_(sheet, headers, row, '\u4ee3\u8fa6\u696d\u8005', payload.agencyType || '');
-  setHeaderValue_(sheet, headers, row, '\u8ffd\u8e64\u72c0\u614b', statusLabel_(payload.status || ''));
-  if (has_(payload, 'nextDate')) setHeaderValue_(sheet, headers, row, '\u4e0b\u6b21\u8ffd\u8e64\u65e5', payload.nextDate || '');
-  setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u8005', payload.updatedBy || '');
-  setHeaderValue_(sheet, headers, row, 'Web\u66f4\u65b0\u6642\u9593', payload.updatedAt || new Date().toISOString());
-  removeVisitLogDropdown_(sheet, headers);
-  if (payload.note) appendLog_(sheet, headers, row, payload);
-  return { ok: true, message: (isRegionSheet ? 'Region sheet synced' : 'Main sheet synced'), row: row };
+  var update = { ok: true, row: row, headerStart: headers.length + 1, newHeaders: [], cells: {} };
+  var fields = [
+    ['company', ['\u516c\u53f8\u540d\u7a31', '\u5ee0\u540d', '\u516c\u53f8']],
+    ['address', ['\u5de5\u5ee0\u5730\u5740', '\u5730\u5740', '\u5ee0\u5740']],
+    ['owner', ['\u8ca0\u8cac\u4eba\u59d3\u540d', '\u8ca0\u8cac\u4eba', '\u806f\u7d61\u4eba']],
+    ['phone', ['\u96fb\u8a71', '\u806f\u7d61\u96fb\u8a71', '\u624b\u6a5f']],
+    ['grade', ['\u5ba2\u6236\u5206\u7d1a', '\u5206\u7d1a', '\u7b49\u7d1a']]
+  ];
+  fields.forEach(function(field) {
+    var index = writebackFindColumnIndex_(headers, field[1]);
+    if (index !== -1 && has_(payload, field[0])) update.cells[index + 1] = payload[field[0]] || '';
+  });
+  if (has_(payload, 'salesperson')) queueHeaderValue_(update, headers, '\u958b\u767c\u696d\u52d9', payload.salesperson);
+  if (has_(payload, 'agencyType')) queueHeaderValue_(update, headers, '\u4ee3\u8fa6\u696d\u8005', payload.agencyType);
+  if (has_(payload, 'status')) queueHeaderValue_(update, headers, '\u8ffd\u8e64\u72c0\u614b', statusLabel_(payload.status));
+  if (has_(payload, 'nextDate')) queueHeaderValue_(update, headers, '\u4e0b\u6b21\u8ffd\u8e64\u65e5', payload.nextDate);
+  queueHeaderValue_(update, headers, 'Web\u66f4\u65b0\u8005', payload.updatedBy);
+  queueHeaderValue_(update, headers, 'Web\u66f4\u65b0\u6642\u9593', payload.updatedAt || new Date().toISOString());
+  if (payload.note) queueVisitLog_(sheet, headers, update, payload);
+  return update;
 }
 
 function findRegionSheet_(ss, targetRegion) {
@@ -169,38 +224,43 @@ function resolveTargetRow_(sheet, headers, data, matchRows, regionIdx, companyId
   return 0;
 }
 
-function appendLog_(sheet, headers, row, payload) {
+function queueVisitLog_(sheet, headers, update, payload) {
   var col = writebackFindColumnIndex_(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
   if (col === -1) return;
   var today = Utilities.formatDate(new Date(), 'GMT+8', 'MM/dd');
   var log = '[' + today + '] ' + payload.note + (payload.salesperson ? ' (' + payload.salesperson + ')' : '');
-  var cell = sheet.getRange(row, col + 1);
+  var cell = sheet.getRange(update.row, col + 1);
   var oldLog = String(cell.getValue() || '');
-  if (oldLog.indexOf(payload.note) === -1) cell.setValue(oldLog ? log + '\n' + oldLog : log);
+  if (oldLog.indexOf(payload.note) !== -1) return;
+  if (cell.getDataValidation()) update.clearValidation = cell;
+  update.cells[col + 1] = oldLog ? log + '\n' + oldLog : log;
 }
 
-function removeVisitLogDropdown_(sheet, headers) {
-  var col = writebackFindColumnIndex_(headers, ['\u62dc\u8a2a\u56de\u5831', '\u62dc\u8a2a\u7d00\u9304', '\u9032\u5ea6\u56de\u5831', '\u56de\u5831', '\u9032\u5ea6']);
-  if (col === -1) return;
-  var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return;
-  sheet.getRange(2, col + 1, lastRow - 1, 1).clearDataValidations();
-}
-
-function setIfPresent_(sheet, row, headers, names, payload, key) {
-  if (!has_(payload, key)) return;
-  var idx = writebackFindColumnIndex_(headers, names);
-  if (idx !== -1) sheet.getRange(row, idx + 1).setValue(payload[key] || '');
-}
-
-function setHeaderValue_(sheet, headers, row, name, value) {
+function queueHeaderValue_(update, headers, name, value) {
   var idx = headers.indexOf(name);
   if (idx === -1) {
     idx = headers.length;
     headers.push(name);
-    sheet.getRange(1, idx + 1).setValue(name);
+    update.newHeaders.push(name);
   }
-  sheet.getRange(row, idx + 1).setValue(value || '');
+  update.cells[idx + 1] = value || '';
+}
+
+function applyCustomerUpdate_(sheet, update) {
+  if (update.newHeaders.length) {
+    sheet.getRange(1, update.headerStart, 1, update.newHeaders.length).setValues([update.newHeaders]);
+  }
+  if (update.clearValidation) update.clearValidation.clearDataValidations();
+  var columns = Object.keys(update.cells).map(Number).sort(function(a, b) { return a - b; });
+  // Batch adjacent cells without rewriting untouched cells or formulas.
+  for (var i = 0; i < columns.length;) {
+    var start = columns[i];
+    var values = [];
+    while (i < columns.length && columns[i] === start + values.length) {
+      values.push(update.cells[columns[i++]]);
+    }
+    sheet.getRange(update.row, start, 1, values.length).setValues([values]);
+  }
 }
 
 function statusLabel_(status) {

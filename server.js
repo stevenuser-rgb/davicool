@@ -8,6 +8,10 @@ const appRoot = __dirname;
 const publicRoot = appRoot;
 const dataDir = resolveDataDir();
 const dbPath = path.join(dataDir, 'app-db.json');
+const sheetHistoryPath = path.join(dataDir, 'customer-sheet-history.json');
+let sheetHistoryQueue = Promise.resolve();
+let customerSheetRead;
+let customerSheetWrites = 0;
 const port = Number(process.env.PORT || 8080);
 const host = process.env.HOST || '0.0.0.0';
 const sessionTtlMs = 1000 * 60 * 60 * 12;
@@ -17,6 +21,44 @@ const sheetCsvUrl = 'https://docs.google.com/spreadsheets/d/185NZwvJFPTsgi0H99mp
 const sheetWriteUrl = cleanEnv(process.env.GOOGLE_SHEET_WRITE_URL);
 const sheetWriteSecret = cleanEnv(process.env.GOOGLE_SHEET_WRITE_SECRET);
 const remoteDbBackupEnabled = Boolean(sheetWriteUrl && sheetWriteSecret);
+const customerSheetId = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_ID);
+const customerSheetGid = cleanEnv(process.env.GOOGLE_SHEET_CUSTOMER_GID);
+const legacySheetTarget = { spreadsheetId: new URL(sheetCsvUrl).pathname.split('/')[3], gid: null };
+
+async function readSheetHistory() {
+  try {
+    return JSON.parse(await fsp.readFile(sheetHistoryPath, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return { active: null, sources: {}, switches: [] };
+  }
+}
+
+function recordSheetActivity(target, field) {
+  const save = sheetHistoryQueue.then(async () => {
+    const history = await readSheetHistory();
+    const key = target.spreadsheetId + ':' + (target.gid ?? 'default');
+    const at = new Date().toISOString();
+    if (field === 'lastReadAt' && history.active !== key) {
+      history.switches.push({ from: history.active, to: key, at });
+      history.active = key;
+    }
+    history.sources[key] = { ...history.sources[key], ...target, [field]: at };
+    const temp = sheetHistoryPath + '.tmp';
+    await fsp.writeFile(temp, JSON.stringify(history, null, 2), 'utf8');
+    await fsp.rename(temp, sheetHistoryPath);
+  });
+  sheetHistoryQueue = save.catch(error => console.warn('Customer sheet activity could not be recorded:', error.message));
+  return sheetHistoryQueue;
+}
+
+function getCustomerSheetTarget() {
+  if (!customerSheetId && !customerSheetGid) return null;
+  if (!/^[\w-]+$/.test(customerSheetId) || !/^\d+$/.test(customerSheetGid) || !remoteDbBackupEnabled) {
+    throw httpError(503, 'SHEET_CONFIG_INVALID', 'Google Sheet customer source configuration is incomplete.');
+  }
+  return { spreadsheetId: customerSheetId, gid: customerSheetGid };
+}
 
 const types = {
   '.html': 'text/html; charset=utf-8',
@@ -95,6 +137,15 @@ async function handleApi(req, res, url) {
   const auth = await requireAuth(req, res);
   if (!auth) return;
 
+  if (req.method === 'GET' && url.pathname === '/api/customer-sheet-history') {
+    if (auth.user.role !== 'admin') {
+      sendJson(res, 403, { error: 'FORBIDDEN', message: 'Administrator access is required.' });
+      return;
+    }
+    sendJson(res, 200, await readSheetHistory());
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/logout') {
     const sessionId = getSessionId(req);
     if (sessionId) sessions.delete(sessionId);
@@ -128,10 +179,14 @@ async function handleApi(req, res, url) {
 
   if (req.method === 'GET' && url.pathname === '/api/customer-states') {
     const db = await readDb();
+    const target = getCustomerSheetTarget() || legacySheetTarget;
+    const sheetUrl = `https://docs.google.com/spreadsheets/d/${target.spreadsheetId}/edit`
+      + (target.gid === null ? '' : `#gid=${target.gid}`);
     sendJson(res, 200, {
       customerStates: db.customerStates || {},
       customerProfiles: db.customerProfiles || {},
-      salespeople: db.salespeople || []
+      salespeople: db.salespeople || [],
+      sheetUrl
     });
     return;
   }
@@ -382,7 +437,9 @@ async function serveStatic(req, res, url) {
     requestPath = requestPath.replace(/^\/factory-crm-app\/?/, '/') || '/';
   }
   let file = path.resolve(publicRoot, requestPath.replace(/^\//, ''));
-  if (!file.startsWith(publicRoot)) {
+  if ((!file.startsWith(publicRoot + path.sep) && file !== publicRoot) ||
+      file === dataDir || file.startsWith(dataDir + path.sep) ||
+      path.basename(file).toLowerCase().startsWith('customer-sheet-history.json')) {
     res.writeHead(403);
     res.end('Forbidden');
     return;
@@ -396,7 +453,7 @@ async function serveStatic(req, res, url) {
   if (path.basename(file) === 'index.html') {
     const html = await fsp.readFile(file, 'utf8');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html.replace('</body>', '<script src="/workspace-preview.js" defer></script></body>'));
+    res.end(html);
     return;
   }
   res.writeHead(200, { 'Content-Type': types[path.extname(file)] || 'application/octet-stream' });
@@ -404,10 +461,24 @@ async function serveStatic(req, res, url) {
 }
 
 async function sendFactoriesCsv(res) {
+  const target = getCustomerSheetTarget();
+  if (target) {
+    const result = await readCustomerSheet(target);
+    if (result.ok !== true || typeof result.csv !== 'string') {
+      throw httpError(502, 'SHEET_READ_FAILED', result.message || 'Google Sheet customer list could not be read.');
+    }
+    await recordSheetActivity(target, 'lastReadAt');
+    res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(result.csv);
+    return;
+  }
   try {
     const response = await fetch(sheetCsvUrl);
     if (!response.ok) throw new Error(`Google Sheet HTTP ${response.status}`);
     const csv = await response.text();
+    if (response.headers.get('content-type')?.includes('text/csv')) {
+      await recordSheetActivity(legacySheetTarget, 'lastReadAt');
+    }
     res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(csv);
   } catch {
@@ -417,38 +488,63 @@ async function sendFactoriesCsv(res) {
   }
 }
 
+async function readCustomerSheet(target) {
+  if (customerSheetWrites > 0) return postSheetAction('readCustomerSheet', { target });
+  if (customerSheetRead) return customerSheetRead;
+  const request = postSheetAction('readCustomerSheet', { target });
+  customerSheetRead = request;
+  try {
+    return await request;
+  } finally {
+    if (customerSheetRead === request) customerSheetRead = null;
+  }
+}
+
 async function syncCustomerStateToSheet(customerKey, customerState, user, context = {}) {
+  return syncCustomerToSheet({
+    factoryId: cleanString(context.factoryId || customerKey),
+    region: cleanString(context.region || ''),
+    sourceCompany: cleanString(context.sourceCompany || ''),
+    grade: customerState.grade,
+    status: customerState.status,
+    nextDate: customerState.nextDate,
+    note: customerState.note,
+    salesperson: customerState.salesperson,
+    agencyType: customerState.agencyType,
+    updatedAt: customerState.updatedAt,
+    updatedBy: user.username
+  });
+}
+
+async function syncCustomerToSheet(customer) {
   if (!sheetWriteUrl) {
     return { enabled: false, ok: false, message: 'Google Sheet �g�^�|���]�w�C' };
   }
 
   try {
-    const response = await fetch(sheetWriteUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        secret: sheetWriteSecret,
-        factoryId: cleanString(context.factoryId || customerKey),
-        region: cleanString(context.region || ''),
-        sourceCompany: cleanString(context.sourceCompany || ''),
-        grade: customerState.grade,
-        status: customerState.status,
-        nextDate: customerState.nextDate,
-        note: customerState.note,
-        salesperson: customerState.salesperson,
-        agencyType: customerState.agencyType,
-        updatedAt: customerState.updatedAt,
-        updatedBy: user.username
-      })
-    });
-    const text = await response.text();
+    const target = getCustomerSheetTarget();
+    customerSheetRead = null;
+    customerSheetWrites++;
+    const { response, text } = await (async () => {
+      const response = await fetch(sheetWriteUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(target
+          ? { secret: sheetWriteSecret, action: 'writeCustomerSheet', target, customer }
+          : { secret: sheetWriteSecret, ...customer })
+      });
+      return { response, text: await response.text() };
+    })().finally(() => { customerSheetWrites--; });
     let payload;
     try {
       payload = JSON.parse(text);
     } catch {
-      payload = { ok: response.ok, raw: text.slice(0, 300) };
+      payload = { ok: false, message: 'Apps Script returned an invalid response.' };
     }
     const regionSynced = payload.regionSheetOk === true;
+    if (response.ok && payload.ok === true) {
+      await recordSheetActivity(target || legacySheetTarget, 'lastWriteAt');
+    }
     return {
       enabled: true,
       ok: response.ok && payload.ok !== false && regionSynced,
@@ -478,48 +574,17 @@ function queueCustomerStateSync(customerKey, customerState, user, context = {}) 
   return { enabled: true, queued: true, ok: true, message: 'Google Sheet 同步已排程' };
 }
 async function syncCustomerProfileToSheet(customerKey, customerProfile, user, context = {}) {
-  if (!sheetWriteUrl) {
-    return { enabled: false, ok: false, message: 'Google Sheet �g�^�|���]�w�C' };
-  }
-
-  try {
-    const response = await fetch(sheetWriteUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify({
-        secret: sheetWriteSecret,
-        factoryId: cleanString(context.factoryId || customerKey),
-        region: cleanString(context.region || ''),
-        sourceCompany: cleanString(context.sourceCompany || ''),
-        company: customerProfile.company,
-        owner: customerProfile.owner,
-        phone: customerProfile.phone,
-        address: customerProfile.address,
-        updatedAt: customerProfile.updatedAt,
-        updatedBy: user.username
-      })
-    });
-    const text = await response.text();
-    let payload;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = { ok: response.ok, raw: text.slice(0, 300) };
-    }
-    const regionSynced = payload.regionSheetOk === true;
-    return {
-      enabled: true,
-      ok: response.ok && payload.ok !== false && regionSynced,
-      status: response.status,
-      message: payload.message || (response.ok ? 'Google Sheet �w�P�B�C' : 'Google Sheet �P�B���ѡC'),
-      row: payload.row || null,
-      regionSheet: payload.regionSheet || '',
-      regionSheetOk: regionSynced,
-      regionSheetMessage: payload.regionSheetMessage || ''
-    };
-  } catch (error) {
-    return { enabled: true, ok: false, message: error.message };
-  }
+  return syncCustomerToSheet({
+    factoryId: cleanString(context.factoryId || customerKey),
+    region: cleanString(context.region || ''),
+    sourceCompany: cleanString(context.sourceCompany || ''),
+    company: customerProfile.company,
+    owner: customerProfile.owner,
+    phone: customerProfile.phone,
+    address: customerProfile.address,
+    updatedAt: customerProfile.updatedAt,
+    updatedBy: user.username
+  });
 }
 function queueCustomerProfileSync(customerKey, customerProfile, user, context = {}) {
   if (!sheetWriteUrl) {
